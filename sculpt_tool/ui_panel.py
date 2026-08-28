@@ -5,10 +5,11 @@ Per ARCHITECTURE.md section 4: a single panel in the 3D Viewport's
 Regions, and Batch.
 
 Binding section is wired to OT_bind_garment (operators/op_bind.py); Fit
-section (plus the offset/thickness-scale field in Parameters) is wired
-to OT_fit_garment (operators/op_fit.py). Pin Regions and Batch are still
-placeholder labels — later cards wire OT_batch_fit and the pin-group
-helpers in here.
+section (plus the offset/thickness-scale, collision-resolution toggle,
+and collision-margin fields in Parameters) is wired to OT_fit_garment
+(operators/op_fit.py). Pin Regions and Batch are still placeholder
+labels — later cards wire OT_batch_fit and the pin-group helpers in
+here.
 """
 
 import bpy
@@ -51,7 +52,11 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
         params_box.label(text="Parameters", icon='PROPERTIES')
         if settings:
             params_box.prop(settings, "offset_scale")
-        params_box.label(text="(Collision margin, smoothing — coming soon)")
+            params_box.prop(settings, "use_collision_resolution")
+            collision_row = params_box.row()
+            collision_row.enabled = settings.use_collision_resolution
+            collision_row.prop(settings, "collision_margin")
+        params_box.label(text="(Smoothing — coming soon)")
 
         pins_box = layout.box()
         pins_box.label(text="Pin Regions", icon='GROUP_VERTEX')

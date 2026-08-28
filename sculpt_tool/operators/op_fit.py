@@ -1,24 +1,27 @@
 """OT_fit_garment.
 
-Runs the fit pipeline's project + bake steps (ARCHITECTURE.md section 3,
-steps 1 and 4) against the active garment's declared Target Body
-(``obj.sculpt_tool.target_body``): ``core.solver.project_garment``
-re-evaluates the stored binding (Mode A or B) against the target body's
-current geometry, then this operator writes the result into a
-``Fitted`` Shape Key on the garment — created fresh the first time,
-overwritten in place on subsequent runs (never duplicated), per
-ARCHITECTURE.md section 4's non-destructive-bake rationale. Base mesh
-data is never touched.
+Runs the fit pipeline's project + collision + bake steps (ARCHITECTURE.md
+section 3, steps 1, 2, and 4) against the active garment's declared
+Target Body (``obj.sculpt_tool.target_body``): ``core.solver.
+project_garment`` re-evaluates the stored binding (Mode A or B) against
+the target body's current geometry, then — when ``obj.sculpt_tool.
+use_collision_resolution`` is enabled (the default) — ``core.collision.
+resolve_collisions`` pushes any interpenetrating vertex back out to at
+least ``obj.sculpt_tool.collision_margin`` clearance, then this operator
+writes the result into a ``Fitted`` Shape Key on the garment — created
+fresh the first time, overwritten in place on subsequent runs (never
+duplicated), per ARCHITECTURE.md section 4's non-destructive-bake
+rationale. Base mesh data is never touched. With collision resolution
+disabled, this reproduces the prior (project + bake only) card's raw,
+possibly-interpenetrating output exactly.
 
-Collision resolution and smoothing/relaxation (ARCHITECTURE.md section
-3, steps 2-3) are separate future cards — this operator only runs
-project + bake, so a raw projected (possibly interpenetrating) result is
-expected for now.
+Smoothing/relaxation (ARCHITECTURE.md section 3, step 3) is a separate
+future card — not run by this operator yet.
 """
 
 import bpy
 
-from ..core import solver, storage
+from ..core import collision, solver, storage
 
 SHAPE_KEY_NAME = "Fitted"
 
@@ -66,6 +69,12 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
 
         try:
             fitted_world = solver.project_garment(garment_obj, target_body_obj, offset_scale)
+
+            if getattr(settings, "use_collision_resolution", True):
+                collision_margin = getattr(settings, "collision_margin", 0.01)
+                fitted_world = collision.resolve_collisions(
+                    fitted_world, target_body_obj, collision_margin
+                )
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}

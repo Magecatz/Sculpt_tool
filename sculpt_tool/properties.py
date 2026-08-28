@@ -6,12 +6,15 @@ garment Object so settings travel with the object, not just the scene.
 Source/target body pointers, the bind-mode override (section 6 — lets a
 user force Mode A or B when the auto-detect heuristic's vertex-count
 coincidence would misclassify; see ``core.binding.detect_bind_mode``),
-and the offset/thickness-scale fit parameter (section 6 — a global
+the offset/thickness-scale fit parameter (section 6 — a global
 multiplier on the stored binding offset, applied by
 ``core.solver.project_garment`` / ``operators/op_fit.py``, letting a
-user tighten/loosen the fit without re-binding). Later cards add
-collision margin, smoothing iterations, and pin vertex-group
-references.
+user tighten/loosen the fit without re-binding), and the collision
+parameters (section 3 step 2 / section 6 — ``use_collision_resolution``
+toggles ``core.collision.resolve_collisions`` on/off for
+``operators/op_fit.py``'s pipeline, ``collision_margin`` is the minimum
+garment-to-body clearance that pass enforces). Later cards add smoothing
+iterations and pin vertex-group references.
 """
 
 import bpy
@@ -54,6 +57,26 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
         default=1.0,
         soft_min=-2.0,
         soft_max=3.0,
+    )
+    use_collision_resolution: bpy.props.BoolProperty(
+        name="Collision Resolution",
+        description=(
+            "After projecting the binding onto the Target Body and before "
+            "the Shape Key bake, push any garment vertex found inside the "
+            "Target Body back out to at least Collision Margin clearance"
+        ),
+        default=True,
+    )
+    collision_margin: bpy.props.FloatProperty(
+        name="Collision Margin",
+        description=(
+            "Minimum garment-to-body clearance enforced by the collision "
+            "resolution pass, when enabled"
+        ),
+        default=0.01,
+        min=0.0,
+        soft_max=0.1,
+        unit='LENGTH',
     )
 
 
