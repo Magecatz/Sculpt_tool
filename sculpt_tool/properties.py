@@ -3,11 +3,14 @@
 Per ARCHITECTURE.md sections 4 and 6: a PropertyGroup attached to the
 garment Object so settings travel with the object, not just the scene.
 
-Source/target body pointers, plus the bind-mode override (section 6 —
-lets a user force Mode A or B when the auto-detect heuristic's
-vertex-count coincidence would misclassify; see
-``core.binding.detect_bind_mode``). Later cards add offset/thickness
-scale, collision margin, smoothing iterations, and pin vertex-group
+Source/target body pointers, the bind-mode override (section 6 — lets a
+user force Mode A or B when the auto-detect heuristic's vertex-count
+coincidence would misclassify; see ``core.binding.detect_bind_mode``),
+and the offset/thickness-scale fit parameter (section 6 — a global
+multiplier on the stored binding offset, applied by
+``core.solver.project_garment`` / ``operators/op_fit.py``, letting a
+user tighten/loosen the fit without re-binding). Later cards add
+collision margin, smoothing iterations, and pin vertex-group
 references.
 """
 
@@ -40,6 +43,17 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
         ),
         items=BIND_MODE_OVERRIDE_ITEMS,
         default='AUTO',
+    )
+    offset_scale: bpy.props.FloatProperty(
+        name="Offset / Thickness Scale",
+        description=(
+            "Global multiplier on the stored binding offset, applied at fit "
+            "time — tighten or loosen the garment's distance from the body "
+            "surface without re-binding"
+        ),
+        default=1.0,
+        soft_min=-2.0,
+        soft_max=3.0,
     )
 
 
