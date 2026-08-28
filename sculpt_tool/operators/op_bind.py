@@ -1,14 +1,16 @@
 """OT_bind_garment.
 
-Computes and stores a Mode A (same-topology) binding between the active
-garment object and its declared source body (the
-``obj.sculpt_tool.source_body`` pointer from properties.py), per
-ARCHITECTURE.md sections 2 and 4.
+Computes and stores a binding between the active garment object and its
+declared source body (the ``obj.sculpt_tool.source_body`` pointer from
+properties.py), per ARCHITECTURE.md sections 2, 4, and 6.
 
-Mode auto-detection (topology match -> Mode A, else Mode B) and the
-bind-mode override parameter are not implemented yet — this card only
-ships Mode A. Mode B, auto-detect, and the override live on a future
-card.
+Mode is chosen by ``obj.sculpt_tool.bind_mode_override``: ``'AUTO'`` (the
+default) delegates to ``core.binding.detect_bind_mode`` — Mode A
+(same-topology) when Source Body and the declared Target Body share a
+vertex count, else Mode B (cross-topology, BVH nearest-surface
+projection) — while ``'MODE_A'``/``'MODE_B'`` force that choice
+regardless of what auto-detection would have picked, per section 6's
+escape hatch for topology-mismatch coincidences.
 """
 
 import bpy
@@ -20,8 +22,9 @@ class SCULPTTOOL_OT_bind_garment(bpy.types.Operator):
     bl_idname = "sculpttool.bind_garment"
     bl_label = "Bind Garment"
     bl_description = (
-        "Bind the active garment to its Source Body (Mode A: same-topology "
-        "correspondence). Overwrites any previous binding on this garment"
+        "Bind the active garment to its Source Body (Mode A: same-topology, "
+        "or Mode B: cross-topology BVH projection — auto-detected or forced "
+        "via Bind Mode). Overwrites any previous binding on this garment"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -39,7 +42,8 @@ class SCULPTTOOL_OT_bind_garment(bpy.types.Operator):
 
     def execute(self, context):
         garment_obj = context.object
-        source_body_obj = garment_obj.sculpt_tool.source_body
+        settings = garment_obj.sculpt_tool
+        source_body_obj = settings.source_body
 
         if source_body_obj is None or source_body_obj.type != 'MESH':
             self.report({'ERROR'}, "Select a mesh Source Body before binding.")
@@ -59,13 +63,27 @@ class SCULPTTOOL_OT_bind_garment(bpy.types.Operator):
             self.report({'ERROR'}, "Source Body mesh has no vertices.")
             return {'CANCELLED'}
 
-        result = binding.bind_mode_a(garment_obj, source_body_obj)
-        storage.write_mode_a_binding(garment_obj, source_body_obj, result)
+        override = getattr(settings, "bind_mode_override", 'AUTO')
+        if override == 'MODE_A':
+            mode = binding.MODE_A
+        elif override == 'MODE_B':
+            mode = binding.MODE_B
+        else:
+            mode = binding.detect_bind_mode(source_body_obj, settings.target_body)
+
+        if mode == binding.MODE_A:
+            result = binding.bind_mode_a(garment_obj, source_body_obj)
+            storage.write_mode_a_binding(garment_obj, source_body_obj, result)
+            vertex_count = len(result.body_vertex_index)
+        else:
+            result = binding.bind_mode_b(garment_obj, source_body_obj)
+            storage.write_mode_b_binding(garment_obj, source_body_obj, result)
+            vertex_count = len(result.triangle_index)
 
         self.report(
             {'INFO'},
             f"Bound '{garment_obj.name}' to '{source_body_obj.name}' "
-            f"({len(result.body_vertex_index)} vertices, Mode A).",
+            f"({vertex_count} vertices, Mode {mode}).",
         )
         return {'FINISHED'}
 
