@@ -103,9 +103,10 @@ Mode C).
 2. **Collision resolution** — BVH-based penetration test against the
    target body; any garment vertex found inside the body is pushed out
    along the local normal by at least the user's collision-margin
-   parameter. This test has known blind spots (thin-geometry tunneling,
-   concave push-out direction) that step 3 does not compensate for — see
-   §7.
+   parameter. Thin-geometry tunneling is fixed via a second, anchor-based
+   `BVHTree.ray_cast` check (see §7); the push-out direction in concave
+   regions remains an open, known blind spot that step 3 does not
+   compensate for — see §7.
 3. **Smoothing / relaxation** — Laplacian-style relaxation pass, weighted
    by `(1 - pin_weight)` per vertex so pinned regions don't move, and
    constrained against the garment's own original edge lengths so the
