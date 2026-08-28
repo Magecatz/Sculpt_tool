@@ -25,14 +25,17 @@ bl_info = {
 import bpy  # noqa: E402
 
 from . import properties  # noqa: E402
+from . import operators  # noqa: E402
 from . import ui_panel  # noqa: E402
 
 # Modules that expose register()/unregister(), applied in this order and
-# torn down in reverse. operators/ and core/ have no registerable content
-# yet (scaffold only, no solver logic) so they are not listed here — later
-# cards will add their register()/unregister() and this tuple will grow.
+# torn down in reverse. core/ has no registerable content (pure logic,
+# no bpy.types classes) so it is never listed here. properties.py must
+# come first (operators/ui_panel read obj.sculpt_tool), operators/
+# before ui_panel (the panel references the bind operator's bl_idname).
 _modules = (
     properties,
+    operators,
     ui_panel,
 )
 
