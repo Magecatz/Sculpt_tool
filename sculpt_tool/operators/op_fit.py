@@ -1,27 +1,34 @@
 """OT_fit_garment.
 
-Runs the fit pipeline's project + collision + bake steps (ARCHITECTURE.md
-section 3, steps 1, 2, and 4) against the active garment's declared
-Target Body (``obj.sculpt_tool.target_body``): ``core.solver.
-project_garment`` re-evaluates the stored binding (Mode A or B) against
-the target body's current geometry, then — when ``obj.sculpt_tool.
-use_collision_resolution`` is enabled (the default) — ``core.collision.
-resolve_collisions`` pushes any interpenetrating vertex back out to at
-least ``obj.sculpt_tool.collision_margin`` clearance, then this operator
-writes the result into a ``Fitted`` Shape Key on the garment — created
-fresh the first time, overwritten in place on subsequent runs (never
-duplicated), per ARCHITECTURE.md section 4's non-destructive-bake
-rationale. Base mesh data is never touched. With collision resolution
-disabled, this reproduces the prior (project + bake only) card's raw,
-possibly-interpenetrating output exactly.
+Runs the full fit pipeline (ARCHITECTURE.md section 3, steps 1-4) against
+the active garment's declared Target Body (``obj.sculpt_tool.
+target_body``): ``core.solver.project_garment`` re-evaluates the stored
+binding (Mode A or B) against the target body's current geometry, then
+— when ``obj.sculpt_tool.use_collision_resolution`` is enabled (the
+default) — ``core.collision.resolve_collisions`` pushes any
+interpenetrating vertex back out to at least ``obj.sculpt_tool.
+collision_margin`` clearance, then — when ``obj.sculpt_tool.
+smoothing_iterations`` is greater than zero — ``core.smoothing.relax``
+runs that many pin-weighted relaxation passes to smooth noise left by
+the earlier steps without shrink-wrapping the garment toward the body
+(ARCHITECTURE.md section 1's anti-goal), then this operator writes the
+result into a ``Fitted`` Shape Key on the garment — created fresh the
+first time, overwritten in place on subsequent runs (never duplicated),
+per ARCHITECTURE.md section 4's non-destructive-bake rationale. Base
+mesh data is never touched.
 
-Smoothing/relaxation (ARCHITECTURE.md section 3, step 3) is a separate
-future card — not run by this operator yet.
+``smoothing_iterations == 0`` is a true no-op: this operator does not
+call into ``core.smoothing`` at all in that case (not even to build the
+adjacency/neighbor structure or look up ``Pin_*`` vertex groups), so
+output is bit-identical to the collision-resolution-only pipeline. With
+collision resolution also disabled, this reproduces the original
+(project + bake only) card's raw, possibly-interpenetrating output
+exactly.
 """
 
 import bpy
 
-from ..core import collision, solver, storage
+from ..core import collision, smoothing, solver, storage
 
 SHAPE_KEY_NAME = "Fitted"
 
@@ -79,6 +86,16 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
                     projection.anchor_normals,
                     target_body_obj,
                     collision_margin,
+                )
+
+            smoothing_iterations = getattr(settings, "smoothing_iterations", 0)
+            if smoothing_iterations > 0:
+                pin_weights = smoothing.compute_pin_weights(garment_obj)
+                fitted_world = smoothing.relax(
+                    garment_obj,
+                    fitted_world,
+                    pin_weights,
+                    smoothing_iterations,
                 )
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))

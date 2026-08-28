@@ -13,8 +13,13 @@ user tighten/loosen the fit without re-binding), and the collision
 parameters (section 3 step 2 / section 6 — ``use_collision_resolution``
 toggles ``core.collision.resolve_collisions`` on/off for
 ``operators/op_fit.py``'s pipeline, ``collision_margin`` is the minimum
-garment-to-body clearance that pass enforces). Later cards add smoothing
-iterations and pin vertex-group references.
+garment-to-body clearance that pass enforces), and the smoothing
+parameter (section 3 step 3 / section 6 — ``smoothing_iterations`` is
+the iteration count for ``core.smoothing.relax``'s pin-weighted
+relaxation pass; ``0`` disables the pass entirely, and
+``operators/op_fit.py`` treats that as a true no-op rather than calling
+into ``core.smoothing`` at all). A later card adds pin vertex-group
+references.
 """
 
 import bpy
@@ -77,6 +82,20 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
         min=0.0,
         soft_max=0.1,
         unit='LENGTH',
+    )
+    smoothing_iterations: bpy.props.IntProperty(
+        name="Smoothing Iterations",
+        description=(
+            "Number of pin-weighted Laplacian relaxation passes to run after "
+            "collision resolution and before the Shape Key bake, to smooth "
+            "noise left by projection/collision without shrink-wrapping the "
+            "garment toward the body (constrained against the garment's own "
+            "original edge lengths). 0 disables the pass entirely (true "
+            "no-op)"
+        ),
+        default=0,
+        min=0,
+        soft_max=10,
     )
 
 

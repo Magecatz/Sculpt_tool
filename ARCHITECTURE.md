@@ -297,6 +297,28 @@ facing layer that wires user input to `core/`.
   `core/collision.py`'s module boundary beyond taking two more
   already-computed lists as parameters).
 
+- **Smoothing's edge-length constraint is a single relaxation sweep per
+  iteration, not a full solve.** `core/smoothing.py`'s `relax()` runs one
+  damped Laplacian step followed by one pass over all edges pulling each
+  back toward its original (base-mesh) length, per `smoothing_iterations`
+  — not an iterate-to-convergence constraint solver within a single
+  iteration. This is intentional (cheap, and `smoothing_iterations` is
+  itself the user's knob for "how much"), but a vertex snapped by the
+  collision pass's anchor-based tunneling correction (see above —
+  `anchor_position + anchor_normal * collision_margin`, which discards
+  that vertex's tangential/bind offset entirely) sits adjacent to
+  neighbors that keep their full authored offset: a genuinely larger,
+  differently-shaped discontinuity than the low-amplitude projection/
+  collision jitter this pass is mainly designed to clean up. Per an
+  Architect consult on this card, the edge-length constraint handles this
+  correctly as-is (verified: a thin-geometry tunneling scenario run
+  through the full Fit pipeline followed by smoothing stays finite with
+  bounded edge lengths, no blow-up) — but a garment/body pairing that
+  triggers tunneling correction on many neighboring vertices at once may
+  show a locally tauter or slower-to-relax patch near the correction
+  compared to ordinary noise elsewhere. Not a bug; not solved further
+  here.
+
 ## 8. Batch/automated extension
 
 `OT_batch_fit` is the intended batch entry point: point it at a
