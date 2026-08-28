@@ -290,7 +290,14 @@ facing layer that wires user input to `core/`.
   scope: on sufficiently convoluted/bumpy geometry the anchor-to-fitted
   segment can graze an unrelated nearby fold of the body and produce a
   false-positive tunneling detection — the same class of blind spot as
-  the concave push-out-direction issue above, not a new one. Validated by
+  the concave push-out-direction issue above, not a new one. Separately,
+  worth flagging for whoever picks up Smoothing (not a defect here): because
+  the corrected vertex is snapped to `anchor_position + anchor_normal *
+  collision_margin`, a pure normal-offset point, its tangential/bitangent
+  offset is collapsed to zero — the correct, intentional trade-off for
+  collision safety, but it makes a tunnel-corrected vertex a categorically
+  different kind of displacement (larger, differently shaped) than the
+  ordinary sub-margin jitter the rest of the pipeline produces. Validated by
   an Architect consult on this card before implementation (the anchor
   point was already being computed by `solver.py` and thrown away, so
   this needed no new binding-time data and no widening of
