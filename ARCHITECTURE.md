@@ -243,24 +243,58 @@ facing layer that wires user input to `core/`.
   runs unattended at scale and is the workflow least likely to have
   someone around to notice a quietly-wrong fit. Tracked as Backlog card
   `089ab86f-4247-42c4-9652-9d30de33fbdf`.
-- **Collision resolution has no solid/parity test, so it misses
-  tunneling and can push out the wrong way in concave regions.**
-  `resolve_collisions()` in `core/collision.py` decides inside-vs-outside
-  using only nearest-point distance plus the local face-normal sign —
-  there's no ray-parity or winding-number check behind it. A garment
-  vertex that has tunneled all the way through a thin body part (wrist,
-  ankle) reads as "outside" under this test and is left untouched,
-  producing visible punch-through even though the collision toggle
-  defaults on. The same nearest-point mechanism is independently
-  unreliable at picking a push-out direction in concave regions (armpits,
-  crotch) — related to, but distinct from, the Mode B concave-region
-  issue above (that one is a binding-math problem; this is the collision
-  pass's own geometry test). This has a real claim to being fixed before
-  or alongside Smoothing (see §3 step 2): Laplacian relaxation assumes
-  step 2's output is merely noisy, not topologically wrong, and will
-  spread a single tunneled vertex's defect into a duller, harder-to-spot
-  dent across its neighbors if built on top of this as-is. Tracked as
-  Backlog card `c9ff95a5-6269-4c82-8789-08113a9dc9d3`.
+- **Collision resolution's push-out direction is still unreliable in
+  concave regions.** (Tunneling — see below — is fixed; this half of
+  card `c9ff95a5-6269-4c82-8789-08113a9dc9d3` was explicitly deprioritized
+  by the Architect and deliberately not addressed by that fix.)
+  `resolve_collisions()` in `core/collision.py` still decides ordinary
+  (non-tunneled) interpenetration using nearest-point distance plus the
+  local face-normal sign, which is independently unreliable at picking a
+  push-out direction in concave regions (armpits, crotch) — related to,
+  but distinct from, the Mode B concave-region issue above (that one is a
+  binding-math problem; this is the collision pass's own geometry test).
+  Not solved in v1 — a multi-sample/averaged local normal, or an explicit
+  flag+report-don't-silently-fix approach for vertices in ambiguous local
+  geometry, were the two directions suggested when this was filed;
+  neither is implemented yet. Remains tracked under the same card.
+
+  **Tunneling is fixed** (same card, prioritized half, done in
+  `fix/collision-tunneling`): a vertex that tunnels all the way through
+  thin geometry (e.g. wrist/ankle) is no longer left in place. The fix
+  does not make the inside/outside test on the vertex's own final
+  position smarter — a vertex sitting well past the far wall of a thin
+  slab is genuinely, correctly outside the solid by any point-containment
+  test (nearest-point sign, ray-parity, winding number alike), so no such
+  test can flag it without being wrong. Instead, `core/solver.py`'s
+  `project_mode_a`/`project_mode_b` now return the per-vertex anchor
+  point (and its normal) on the target body's surface that the binding
+  offset was actually measured from — the surface the vertex is meant to
+  be hugging, independent of how far the offset then carried it — via a
+  `ProjectionResult` dataclass, instead of discarding it after computing
+  the offset. `resolve_collisions()` (now
+  `resolve_collisions(fitted_positions, anchor_positions, anchor_normals,
+  target_body_obj, collision_margin)`) uses that anchor for a second,
+  bounded `BVHTree.ray_cast` per vertex — only when the existing
+  nearest-point test didn't already flag it — checking whether the
+  straight segment from anchor to fitted position crosses the target
+  body's own surface at all. That can only happen if the offset carried
+  the vertex through solid material, which is exactly what "tunneled"
+  means; a vertex caught this way is pushed back to
+  `anchor_position + anchor_normal * collision_margin` (the near surface)
+  rather than whatever the nearest-point query would find on the far
+  side. One extra bounded ray-cast per vertex, same single BVH build per
+  call as before — no meaningful perf regression at the scales this
+  pipeline targets (verified: ~30k vertices against a ~65k-triangle body
+  in ~0.25s). Known limitation of this approach, accepted as out of
+  scope: on sufficiently convoluted/bumpy geometry the anchor-to-fitted
+  segment can graze an unrelated nearby fold of the body and produce a
+  false-positive tunneling detection — the same class of blind spot as
+  the concave push-out-direction issue above, not a new one. Validated by
+  an Architect consult on this card before implementation (the anchor
+  point was already being computed by `solver.py` and thrown away, so
+  this needed no new binding-time data and no widening of
+  `core/collision.py`'s module boundary beyond taking two more
+  already-computed lists as parameters).
 
 ## 8. Batch/automated extension
 
