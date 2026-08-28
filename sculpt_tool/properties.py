@@ -3,12 +3,21 @@
 Per ARCHITECTURE.md sections 4 and 6: a PropertyGroup attached to the
 garment Object so settings travel with the object, not just the scene.
 
-Scaffold only — just the source/target body pointers for now. Later
-cards add offset/thickness scale, collision margin, smoothing
-iterations, pin vertex-group references, and the bind-mode override.
+Source/target body pointers, plus the bind-mode override (section 6 —
+lets a user force Mode A or B when the auto-detect heuristic's
+vertex-count coincidence would misclassify; see
+``core.binding.detect_bind_mode``). Later cards add offset/thickness
+scale, collision margin, smoothing iterations, and pin vertex-group
+references.
 """
 
 import bpy
+
+BIND_MODE_OVERRIDE_ITEMS = (
+    ('AUTO', "Auto-Detect", "Choose Mode A or B automatically based on source/target body topology"),
+    ('MODE_A', "Force Mode A", "Force same-topology (vertex-index) binding regardless of auto-detection"),
+    ('MODE_B', "Force Mode B", "Force cross-topology (BVH nearest-surface) binding regardless of auto-detection"),
+)
 
 
 class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
@@ -21,6 +30,16 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
         name="Target Body",
         description="Body mesh to fit the garment onto",
         type=bpy.types.Object,
+    )
+    bind_mode_override: bpy.props.EnumProperty(
+        name="Bind Mode",
+        description=(
+            "Auto-detect picks Mode A when Source Body and Target Body share "
+            "vertex count (else Mode B). Force an option to override that "
+            "heuristic when a topology-mismatch coincidence would misclassify it"
+        ),
+        items=BIND_MODE_OVERRIDE_ITEMS,
+        default='AUTO',
     )
 
 

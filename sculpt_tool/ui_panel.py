@@ -30,6 +30,7 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
         binding_box.label(text="Binding", icon='MOD_MESHDEFORM')
         if settings:
             binding_box.prop(settings, "source_body")
+            binding_box.prop(settings, "bind_mode_override")
         binding_box.operator("sculpttool.bind_garment", icon='MOD_MESHDEFORM')
         if obj is not None and obj.type == 'MESH' and storage.is_bound(obj):
             source_name, mode, version = storage.get_binding_info(obj)
