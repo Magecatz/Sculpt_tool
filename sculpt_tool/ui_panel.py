@@ -4,13 +4,14 @@ Per ARCHITECTURE.md section 4: a single panel in the 3D Viewport's
 "Sculpt Tool" tab with sections for Binding, Fit, Parameters, Pin
 Regions, and Batch.
 
-Scaffold only — sections are placeholder labels (plus the source/target
-body pickers already backed by properties.py). No operators exist yet,
-so there are no functional buttons; later cards wire OT_bind_garment,
+Binding section is wired to OT_bind_garment (operators/op_bind.py).
+The other sections are still placeholder labels — later cards wire
 OT_fit_garment, OT_batch_fit, and the pin-group helpers in here.
 """
 
 import bpy
+
+from .core import storage
 
 
 class SCULPTTOOL_PT_main(bpy.types.Panel):
@@ -29,7 +30,13 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
         binding_box.label(text="Binding", icon='MOD_MESHDEFORM')
         if settings:
             binding_box.prop(settings, "source_body")
-        binding_box.label(text="(Bind button — coming soon)")
+        binding_box.operator("sculpttool.bind_garment", icon='MOD_MESHDEFORM')
+        if obj is not None and obj.type == 'MESH' and storage.is_bound(obj):
+            source_name, mode, version = storage.get_binding_info(obj)
+            binding_box.label(
+                text=f"Bound to '{source_name}' (Mode {mode}, v{version})",
+                icon='CHECKMARK',
+            )
 
         fit_box = layout.box()
         fit_box.label(text="Fit", icon='MOD_SHRINKWRAP')
