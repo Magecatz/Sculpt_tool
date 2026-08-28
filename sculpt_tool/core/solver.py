@@ -43,12 +43,48 @@ given the current schema, but fragile (a renamed/deleted source body, or
 one edited after bind, silently breaks fitting) — flagged as a follow-up
 card (persist the anchor in the source body's own local object space at
 bind time instead) rather than blocking this one.
+
+Both modes also compute, per garment vertex, the point on the TARGET
+body's surface the stored offset is actually applied from (Mode A:
+``target_positions[body_index]``; Mode B: the ``find_nearest`` hit on the
+target BVH) before adding the offset -- this "anchor" is returned
+alongside the fitted position (see :class:`ProjectionResult`) rather than
+discarded, per an Architect consult on card
+``c9ff95a5-6269-4c82-8789-08113a9dc9d3``: it's the one non-local
+reference point that's unconditionally on the correct (near) surface by
+construction, and ``core.collision.resolve_collisions`` uses it to catch
+a garment vertex that has tunneled all the way through thin geometry --
+something no test of the fitted position in isolation can detect, since
+such a vertex is genuinely outside the body from its own local point of
+view.
 """
+
+from dataclasses import dataclass
 
 import bpy
 from mathutils.bvhtree import BVHTree
 
 from . import binding, storage
+
+
+@dataclass
+class ProjectionResult:
+    """Per-garment-vertex projection output, in vertex-index order.
+
+    ``anchor_positions``/``anchor_normals`` are the point-on-target-body
+    surface (and that point's normal) each vertex's stored offset was
+    applied from -- i.e. the surface point this garment vertex is meant
+    to hug, before the offset carries it away by however much. This is
+    NOT the same as "the fitted position's own nearest surface point":
+    it's a reference that stays correct even when the fitted position
+    itself has ended up somewhere the offset math didn't intend (e.g.
+    tunneled through thin geometry). See ``core.collision.
+    resolve_collisions``, the sole consumer.
+    """
+
+    fitted_positions: list
+    anchor_positions: list
+    anchor_normals: list
 
 
 def _resolve_source_body(binding_info):
@@ -73,8 +109,7 @@ def _resolve_source_body(binding_info):
 def project_mode_a(garment_obj, target_body_obj, offset_scale=1.0):
     """Re-evaluate a Mode A binding against ``target_body_obj``.
 
-    Returns a list of fitted world-space ``Vector`` positions, one per
-    garment vertex, in vertex-index order.
+    Returns a :class:`ProjectionResult`.
     """
     info = storage.read_mode_a_binding(garment_obj)
     if info is None:
@@ -93,6 +128,8 @@ def project_mode_a(garment_obj, target_body_obj, offset_scale=1.0):
 
     target_vertex_count = len(target_positions)
     fitted = []
+    anchor_positions = []
+    anchor_normals = []
     for i, body_index in enumerate(body_vertex_index):
         if body_index >= target_vertex_count:
             raise ValueError(
@@ -110,16 +147,21 @@ def project_mode_a(garment_obj, target_body_obj, offset_scale=1.0):
             + bitangent * bitangent_offset[i]
         )
         fitted.append(body_co + offset_vec * offset_scale)
+        anchor_positions.append(body_co)
+        anchor_normals.append(normal)
 
-    return fitted
+    return ProjectionResult(
+        fitted_positions=fitted,
+        anchor_positions=anchor_positions,
+        anchor_normals=anchor_normals,
+    )
 
 
 def project_mode_b(garment_obj, target_body_obj, offset_scale=1.0):
     """Re-evaluate a Mode B binding against ``target_body_obj``.
 
-    See the module docstring for the algorithm. Returns a list of fitted
-    world-space ``Vector`` positions, one per garment vertex, in
-    vertex-index order.
+    See the module docstring for the algorithm. Returns a
+    :class:`ProjectionResult`.
     """
     info = storage.read_mode_b_binding(garment_obj)
     if info is None:
@@ -148,6 +190,8 @@ def project_mode_b(garment_obj, target_body_obj, offset_scale=1.0):
 
     source_triangle_count = len(source_triangles)
     fitted = []
+    anchor_positions = []
+    anchor_normals = []
     for i, tri_idx in enumerate(triangle_index):
         if tri_idx >= source_triangle_count:
             raise ValueError(
@@ -190,8 +234,14 @@ def project_mode_b(garment_obj, target_body_obj, offset_scale=1.0):
             + bitangent2 * tangent_v
         )
         fitted.append(hit_location + offset_vec * offset_scale)
+        anchor_positions.append(hit_location)
+        anchor_normals.append(normal2)
 
-    return fitted
+    return ProjectionResult(
+        fitted_positions=fitted,
+        anchor_positions=anchor_positions,
+        anchor_normals=anchor_normals,
+    )
 
 
 def project_garment(garment_obj, target_body_obj, offset_scale=1.0):
@@ -199,10 +249,10 @@ def project_garment(garment_obj, target_body_obj, offset_scale=1.0):
 
     Dispatches to :func:`project_mode_a` or :func:`project_mode_b` based
     on the garment's stored bind mode (``storage.PROP_BIND_MODE``).
-    Returns a list of fitted world-space ``Vector`` positions, one per
-    garment vertex, in vertex-index order — ready for
-    ``operators/op_fit.py`` to convert to the garment's local space and
-    bake into a Shape Key.
+    Returns a :class:`ProjectionResult` — ready for
+    ``operators/op_fit.py`` to pass to ``core.collision.
+    resolve_collisions`` and to convert ``.fitted_positions`` to the
+    garment's local space for the Shape Key bake.
     """
     mode = garment_obj.get(storage.PROP_BIND_MODE)
     if mode == storage.MODE_A:

@@ -68,12 +68,17 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
         offset_scale = getattr(settings, "offset_scale", 1.0)
 
         try:
-            fitted_world = solver.project_garment(garment_obj, target_body_obj, offset_scale)
+            projection = solver.project_garment(garment_obj, target_body_obj, offset_scale)
+            fitted_world = projection.fitted_positions
 
             if getattr(settings, "use_collision_resolution", True):
                 collision_margin = getattr(settings, "collision_margin", 0.01)
                 fitted_world = collision.resolve_collisions(
-                    fitted_world, target_body_obj, collision_margin
+                    fitted_world,
+                    projection.anchor_positions,
+                    projection.anchor_normals,
+                    target_body_obj,
+                    collision_margin,
                 )
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
