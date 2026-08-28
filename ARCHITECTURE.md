@@ -103,7 +103,9 @@ Mode C).
 2. **Collision resolution** — BVH-based penetration test against the
    target body; any garment vertex found inside the body is pushed out
    along the local normal by at least the user's collision-margin
-   parameter.
+   parameter. This test has known blind spots (thin-geometry tunneling,
+   concave push-out direction) that step 3 does not compensate for — see
+   §7.
 3. **Smoothing / relaxation** — Laplacian-style relaxation pass, weighted
    by `(1 - pin_weight)` per vertex so pinned regions don't move, and
    constrained against the garment's own original edge lengths so the
@@ -225,6 +227,40 @@ facing layer that wires user input to `core/`.
   happen to share a vertex count could be misclassified as Mode A. The
   bind-mode override parameter exists specifically as the escape hatch,
   but the default heuristic itself is a known soft spot.
+- **Mode B re-derives its anchor from the source body's live mesh, not a
+  bind-time snapshot.** `project_mode_b` in `core/solver.py` reconstructs
+  the bind-time correspondence point from the source body's *current*
+  mesh via the stored `triangle_index`/barycentric weights, rather than
+  from a cached bind-time position. If the source body is edited or
+  reshaped after bind — a different situation from the source body being
+  missing/renamed, which already raises a clear error — the fit silently
+  reprojects onto the altered geometry with no warning that the binding
+  is stale. This is a separate failure mode from the correspondence-math
+  degradation described above: the geometry query itself stays valid,
+  but it's answering a question the user no longer thinks they're
+  asking. It doesn't block Smoothing or the Pin-UI work, but it should be
+  fixed before Batch fitting is trusted for real production use — Batch
+  runs unattended at scale and is the workflow least likely to have
+  someone around to notice a quietly-wrong fit. Tracked as Backlog card
+  `089ab86f-4247-42c4-9652-9d30de33fbdf`.
+- **Collision resolution has no solid/parity test, so it misses
+  tunneling and can push out the wrong way in concave regions.**
+  `resolve_collisions()` in `core/collision.py` decides inside-vs-outside
+  using only nearest-point distance plus the local face-normal sign —
+  there's no ray-parity or winding-number check behind it. A garment
+  vertex that has tunneled all the way through a thin body part (wrist,
+  ankle) reads as "outside" under this test and is left untouched,
+  producing visible punch-through even though the collision toggle
+  defaults on. The same nearest-point mechanism is independently
+  unreliable at picking a push-out direction in concave regions (armpits,
+  crotch) — related to, but distinct from, the Mode B concave-region
+  issue above (that one is a binding-math problem; this is the collision
+  pass's own geometry test). This has a real claim to being fixed before
+  or alongside Smoothing (see §3 step 2): Laplacian relaxation assumes
+  step 2's output is merely noisy, not topologically wrong, and will
+  spread a single tunneled vertex's defect into a duller, harder-to-spot
+  dent across its neighbors if built on top of this as-is. Tracked as
+  Backlog card `c9ff95a5-6269-4c82-8789-08113a9dc9d3`.
 
 ## 8. Batch/automated extension
 
