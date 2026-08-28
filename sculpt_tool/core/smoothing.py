@@ -24,15 +24,21 @@ toward its ORIGINAL length — measured on the garment's own BASE mesh
 (``garment_obj.data``, pre-bind/pre-fit, not the evaluated/depsgraph
 mesh and not anything already touched by projection or collision) in
 world space, to match the world-space positions this module operates on.
-This is a single-sweep, per-edge, mass-weighted correction (the same
-family of technique as a position-based-dynamics distance constraint,
-one relaxation sweep per call rather than iterating to full convergence
-within a single smoothing iteration) — good enough to keep edge lengths
-close to their authored values without turning this module into a full
-constraint solver; repeated smoothing iterations let it converge further
-if needed. Both the Laplacian step and the edge-length correction step
-scale by ``(1 - pin_weight)`` per endpoint, so a fully-pinned vertex is
-untouched by either.
+This is a per-edge, mass-weighted correction (the same family of
+technique as a position-based-dynamics distance constraint), run as
+several internal Gauss-Seidel sub-sweeps per smoothing iteration (see
+``_EDGE_CORRECTION_SUBSTEPS``) rather than exactly one — a single sweep
+per iteration was found to leave enough residual edge-length error for
+the next iteration's Laplacian step to compound into a several-percent
+radius shrink on curved (tube/sleeve-shaped) geometry even with zero
+noise and zero pins, which is exactly the shrink-wrap failure mode this
+correction exists to prevent. Iterating the sub-sweep internally lets
+each outer iteration re-satisfy edge lengths close enough to their
+authored values that the residual plateaus instead of compounding as
+``smoothing_iterations`` grows, while still stopping short of a full
+constraint solver. Both the Laplacian step and the edge-length
+correction step scale by ``(1 - pin_weight)`` per endpoint, so a
+fully-pinned vertex is untouched by either.
 
 Pure logic operating on mesh data (testable outside the UI), matching
 ``core/solver.py``/``core/collision.py``'s convention: no Blender-
@@ -154,35 +160,63 @@ def _laplacian_step(positions, neighbors, pin_weights):
     return result
 
 
-def _edge_length_step(positions, original_edges, pin_weights):
-    """One mass-weighted distance-constraint sweep toward original edge lengths.
+# Number of internal Gauss-Seidel sweeps _edge_length_step runs per outer
+# relax() iteration. A single sweep does not fully re-satisfy every edge
+# before the next outer iteration's Laplacian step compounds a fresh
+# contraction on top of whatever length error is left over -- on curved
+# geometry (e.g. a cylindrical/tube-shaped garment) that residual error
+# accumulates iteration over iteration instead of canceling, producing
+# several-percent radius shrinkage over a typical smoothing_iterations
+# run even with zero noise and zero pins on a perfectly clean mesh (an
+# Architect-confirmed regression against ARCHITECTURE.md section 1's
+# anti-shrinkwrap goal). Looping this sweep internally lets each outer
+# iteration re-converge edge lengths much closer to their original
+# values before the next Laplacian step runs, so the residual plateaus
+# instead of compounding as `iterations` grows. 16 was the Architect's
+# own tested figure (~0.2% shrinkage at both 10 and 40 outer iterations
+# on a synthetic tube case, confirming a plateau rather than continued
+# growth) and stays cheap relative to the pipeline's per-vertex BVH
+# collision work even at this ~16x increase in sweep count.
+_EDGE_CORRECTION_SUBSTEPS = 16
 
-    Sequential ("Gauss-Seidel-style") update over ``original_edges`` in a
-    fixed (mesh edge index) order: each edge's correction is applied
-    immediately, so later edges in the same sweep see earlier edges'
-    corrections. This is standard for this class of constraint solver
-    and converges faster than a simultaneous update would.
+
+def _edge_length_step(positions, original_edges, pin_weights):
+    """``_EDGE_CORRECTION_SUBSTEPS`` mass-weighted distance-constraint
+    sweeps toward original edge lengths.
+
+    Each sub-sweep is a sequential ("Gauss-Seidel-style") update over
+    ``original_edges`` in a fixed (mesh edge index) order: each edge's
+    correction is applied immediately, so later edges in the same
+    sub-sweep see earlier edges' corrections, and each sub-sweep after
+    the first sees the previous sub-sweep's corrections. This is
+    standard for this class of constraint solver and converges faster
+    than a simultaneous update would; running several sub-sweeps here
+    (rather than exactly one) is what lets edge lengths re-converge close
+    to their original values within a single outer `relax()` iteration
+    instead of leaving a residual for the next iteration's Laplacian step
+    to compound (see :data:`_EDGE_CORRECTION_SUBSTEPS`).
     """
     result = list(positions)
-    for a, b, original_length in original_edges:
-        free_a = 1.0 - pin_weights[a]
-        free_b = 1.0 - pin_weights[b]
-        total_free = free_a + free_b
-        if total_free <= 0.0:
-            # Both endpoints fully pinned -- no correction is allowed to
-            # move either of them.
-            continue
+    for _ in range(_EDGE_CORRECTION_SUBSTEPS):
+        for a, b, original_length in original_edges:
+            free_a = 1.0 - pin_weights[a]
+            free_b = 1.0 - pin_weights[b]
+            total_free = free_a + free_b
+            if total_free <= 0.0:
+                # Both endpoints fully pinned -- no correction is allowed
+                # to move either of them.
+                continue
 
-        delta = result[b] - result[a]
-        current_length = delta.length
-        if current_length < _MIN_EDGE_LENGTH:
-            continue
+            delta = result[b] - result[a]
+            current_length = delta.length
+            if current_length < _MIN_EDGE_LENGTH:
+                continue
 
-        direction = delta / current_length
-        correction = (current_length - original_length) * direction
+            direction = delta / current_length
+            correction = (current_length - original_length) * direction
 
-        result[a] = result[a] + correction * (free_a / total_free)
-        result[b] = result[b] - correction * (free_b / total_free)
+            result[a] = result[a] + correction * (free_a / total_free)
+            result[b] = result[b] - correction * (free_b / total_free)
 
     return result
 
@@ -200,12 +234,13 @@ def relax(garment_obj, positions, pin_weights=None, iterations=1):
     all-``0.0`` (nothing pinned) list is used.
 
     Each iteration is one damped Laplacian step (see
-    :func:`_laplacian_step`) followed by one edge-length correction
-    sweep (see :func:`_edge_length_step`); both scale every vertex's
-    movement by ``(1 - pin_weight)``, so a vertex at ``pin_weight == 1.0``
-    is added to across both steps with an exactly-zero vector every
-    time — it comes out of ``relax()`` bit-for-bit identical to how it
-    went in, regardless of ``iterations``.
+    :func:`_laplacian_step`) followed by several internal edge-length
+    correction sub-sweeps (see :func:`_edge_length_step`); both scale
+    every vertex's movement by ``(1 - pin_weight)``, so a vertex at
+    ``pin_weight == 1.0`` is added to across both steps with an
+    exactly-zero vector every time — it comes out of ``relax()``
+    bit-for-bit identical to how it went in, regardless of
+    ``iterations``.
 
     Returns a new list of the same length/order. ``iterations <= 0``
     returns ``positions`` unchanged (see module docstring for why
