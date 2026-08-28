@@ -4,9 +4,11 @@ Per ARCHITECTURE.md section 4: a single panel in the 3D Viewport's
 "Sculpt Tool" tab with sections for Binding, Fit, Parameters, Pin
 Regions, and Batch.
 
-Binding section is wired to OT_bind_garment (operators/op_bind.py).
-The other sections are still placeholder labels — later cards wire
-OT_fit_garment, OT_batch_fit, and the pin-group helpers in here.
+Binding section is wired to OT_bind_garment (operators/op_bind.py); Fit
+section (plus the offset/thickness-scale field in Parameters) is wired
+to OT_fit_garment (operators/op_fit.py). Pin Regions and Batch are still
+placeholder labels — later cards wire OT_batch_fit and the pin-group
+helpers in here.
 """
 
 import bpy
@@ -43,11 +45,13 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
         fit_box.label(text="Fit", icon='MOD_SHRINKWRAP')
         if settings:
             fit_box.prop(settings, "target_body")
-        fit_box.label(text="(Fit button — coming soon)")
+        fit_box.operator("sculpttool.fit_garment", icon='MOD_SHRINKWRAP')
 
         params_box = layout.box()
         params_box.label(text="Parameters", icon='PROPERTIES')
-        params_box.label(text="(Offset, collision margin, smoothing — coming soon)")
+        if settings:
+            params_box.prop(settings, "offset_scale")
+        params_box.label(text="(Collision margin, smoothing — coming soon)")
 
         pins_box = layout.box()
         pins_box.label(text="Pin Regions", icon='GROUP_VERTEX')
