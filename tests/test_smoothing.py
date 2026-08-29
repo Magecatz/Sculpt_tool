@@ -127,32 +127,51 @@ class PinBlendMonotonicityTest(unittest.TestCase):
 
 
 class GradedBoundaryAdversarialSweepTest(unittest.TestCase):
-    """ARCHITECTURE.md section 7 / Backlog card 8432ee45-20a9-47da-be6a-
-    53e3beee39e6: a graded pin-weight region near the garment's own free
+    """ARCHITECTURE.md section 7 / bug card 8432ee45-20a9-33d9-a852-
+    6d1115a0bcda: a graded pin-weight region near the garment's own free
     boundary, combined with position noise, can let a partially-pinned
     vertex move MORE than the most-displaced fully-unpinned vertex in the
     same run. This is the seeded, checked-in regression guard for that
-    residual -- it is both the regression guard for the current bound and
-    the harness the follow-up card (8432ee45) needs to already exist
-    before it can be worked.
+    residual.
+
+    **Fix applied (this card):** ``relax()`` (``core/smoothing.py``) now
+    passes the real per-vertex pin-weight array to ``_edge_length_step``
+    for its outer-iteration "candidate" computation, instead of an
+    all-``0.0`` array (``_laplacian_step`` still gets an all-``0.0`` array
+    -- only the edge-length correction's mass-weighted split changed).
+    Architect-directed cheap experiment, tried before considering a
+    structural "dual-trajectory" redesign: since the edge-length
+    sub-sweeps already split each edge's correction by
+    ``free_a / (free_a + free_b)``, feeding them the real pin weights
+    means a neighbor's own resistance to movement is no longer hidden
+    from the correction math at a pin gradient, which was the documented
+    root cause of the overshoot. It does not change per-call cost (same
+    sub-sweep count, same loop shape) and does not touch the
+    ``pin_weight == 0.0`` / ``pin_weight == 1.0`` exact boundaries (see
+    ``PinWeightBoundaryTest`` above, still green).
 
     The sweep below is a fresh reproduction (the original ad hoc script
     that produced ARCHITECTURE.md's ~46%/1.46x figure was never checked
-    in -- that omission is what this whole suite exists to prevent from
-    happening again), tuned to land in the same regime the doc describes
-    (graded band feathering toward zero at a free boundary + jitter, a
-    minority of configurations affected, an above-baseline overshoot on
-    the worst one). This sweep's own current worst case, across the seed/
-    grading-width/iteration grid below, is ~1.37x (seed 6, grading width
-    4, 15 iterations) -- the same phenomenon and order of magnitude as
-    the doc's 1.46x, not an exact reproduction (a different synthetic
-    mesh/pin layout than the original, never-checked-in script). The
-    ceiling below is that measured worst case plus a small margin -- a
-    regression guard for THIS harness going forward, not a re-assertion
-    of the original unreproducible number.
+    in), tuned to land in the same regime the doc describes (graded band
+    feathering toward zero at a free boundary + jitter, a minority of
+    configurations affected, an above-baseline overshoot on the worst
+    one). It was widened on this card (more seeds, a wider grading-width
+    and jitter-amplitude range) specifically because the fix reduces the
+    overshoot enough that the original narrower grid stopped finding a
+    worst case anywhere near the true one -- a regression guard needs to
+    actually exercise the residual to be worth anything. Pre-fix, this
+    wider grid measured a worst case of ~1.61x (52% of configurations
+    showing at least some overshoot); post-fix, the same grid's worst
+    case is ~1.19x (seed 13, grading width 4, jitter 0.05, 10
+    iterations) with far fewer configurations affected. Both figures are
+    checked-in-reproducible via this test and its ``_worst_ratio`` helper
+    -- not re-asserting the original unreproducible 1.46x number, but a
+    fresh measurement in the same regime, now on both sides of the fix.
+    The ceiling below is the post-fix measured worst case plus a small
+    margin.
     """
 
-    CEILING = 1.40
+    CEILING = 1.22
 
     def setUp(self):
         common.clear_scene()
@@ -201,16 +220,17 @@ class GradedBoundaryAdversarialSweepTest(unittest.TestCase):
 
     def test_worst_case_ratio_stays_under_ceiling(self):
         worst = 0.0
-        for seed in range(8):
-            for grading_width in (3, 4):
-                for iterations in (10, 15, 20):
-                    ratio = self._worst_ratio(
-                        seed=seed,
-                        grading_width=grading_width,
-                        jitter_amplitude=0.03,
-                        iterations=iterations,
-                    )
-                    worst = max(worst, ratio)
+        for seed in range(16):
+            for grading_width in (2, 3, 4, 5):
+                for jitter_amplitude in (0.03, 0.05):
+                    for iterations in (10, 15, 20):
+                        ratio = self._worst_ratio(
+                            seed=seed,
+                            grading_width=grading_width,
+                            jitter_amplitude=jitter_amplitude,
+                            iterations=iterations,
+                        )
+                        worst = max(worst, ratio)
 
         self.assertLessEqual(
             worst,

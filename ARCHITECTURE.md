@@ -216,7 +216,8 @@ facing layer that wires user input to `core/`.
   strong tendency, not a guarantee, and a feathered hem is exactly where
   the exception lives. Section 7 has the full measurement, the
   comparison against pre-fix behavior on the same adversarial scenario,
-  and the tracking card (`8432ee45-20a9-47da-be6a-53e3beee39e6`).
+  and the tracking card (`8432ee45-20a9-33d9-a852-6d1115a0bcda`) — now
+  partially fixed, see section 7.
 - **Bind mode override** — force Mode A/B instead of auto-detect, for
   edge cases where topology matches by coincidence but shouldn't be
   treated as correspondence.
@@ -513,9 +514,10 @@ facing layer that wires user input to `core/`.
     ~0.575% figures above within measurement noise) — expected, since
     with all pins at `0.0` the candidate computation is exactly the
     pre-fix code path, unchanged.
-  - **Known residual, NOT fully bounded: a graded pin-weight region near
-    a mesh boundary, combined with input position noise, can exceed the
-    unpinned baseline.** The isolated-pin and continuous-band bounds
+  - **Known residual, reduced but not fully bounded in every topology: a
+    graded pin-weight region near a mesh boundary, combined with input
+    position noise, can exceed the unpinned baseline.** The isolated-pin
+    and continuous-band bounds
     above hold in every configuration tested, but neither covers a
     *graded* pin region (neighboring vertices at different pin weights)
     sitting near the mesh's own free boundary with some vertex-position
@@ -556,7 +558,53 @@ facing layer that wires user input to `core/`.
     the correction math at a pin gradient), not a small tweak to the
     current approach — i.e. another design iteration, best done with a
     fresh Architect look, rather than something to block this fix on.
-    Tracked as Backlog card `8432ee45-20a9-47da-be6a-53e3beee39e6`.
+    Tracked as bug card `8432ee45-20a9-33d9-a852-6d1115a0bcda`.
+
+    **Partially fixed** (same card, `fix/pin-boundary-overshoot`): per
+    the Architect's directed cheap experiment (try this before any
+    structural redesign, since every structural fix candidate costs
+    roughly 2x smoothing time or loses pin anchoring, for a residual that
+    only affected 3-4% of an adversarial sweep and defaults off),
+    `core/smoothing.py`'s `relax()` now passes the REAL per-vertex pin
+    array to `_edge_length_step` for the outer-iteration candidate
+    computation, instead of an all-`0.0` array (`_laplacian_step` still
+    gets an all-`0.0` array — only the edge-length correction's
+    mass-weighted split changed). This directly targets the likely cause
+    above: `_edge_length_step` already splits each edge's length
+    correction between its two endpoints by `free_a / (free_a + free_b)`;
+    feeding it the real pin weights means a neighbor's own resistance to
+    movement is visible to that split, instead of every neighbor being
+    treated as fully free regardless of how pinned it actually is. No
+    per-call cost change (same sub-sweep count, same loop shape), and the
+    exact `pin_weight == 0.0` / `pin_weight == 1.0` boundaries are
+    unaffected (verified: `tests/test_smoothing.py::PinWeightBoundaryTest`
+    stays green — a `pin_weight == 1.0` vertex's own outer-iteration blend
+    discards whatever the edge-length step computed for it either way,
+    and an all-`0.0` pin array everywhere reduces `_edge_length_step`'s
+    split back to the original 50/50 case).
+
+    Measured on a fresh, wider seed/grading-width/jitter-amplitude sweep
+    than the original 8-seed/2-grading-width/one-jitter-value grid found
+    the residual with (needed to be widened because the fix reduces the
+    overshoot enough that the original grid stopped finding a
+    representative worst case) — both figures checked-in-reproducible via
+    `tests/test_smoothing.py::GradedBoundaryAdversarialSweepTest`:
+    **before** this fix, the wider grid's worst-case ratio was ~1.61x
+    (partially-pinned vertex moving 61% more than the most-displaced
+    unpinned one), with ~52% of the swept configurations showing at least
+    some overshoot; **after**, the same grid's worst case is ~1.19x, with
+    well under half as many configurations affected. A substantial
+    reduction, not an elimination — the test's ceiling was tightened from
+    1.40 (calibrated to the pre-fix ~1.37x measurement on the narrower
+    original grid) to 1.22 (calibrated to the post-fix ~1.19x measurement
+    on the wider grid), and stays a live regression guard rather than a
+    ceiling nothing can reach anymore. Tightening this further is
+    unchanged from the assessment above: it looks like it needs a
+    different candidate-computation strategy (the Architect's documented
+    fallback is a "dual-trajectory" approach, gated on a fresh Architect
+    consult, not a redesign invented ad hoc) rather than another tweak to
+    this same lever. Remains tracked under the same card, now as an
+    accepted residual rather than an open fix.
 
 ## 8. Batch/automated extension
 
