@@ -7,14 +7,43 @@ Regions, and Batch.
 Binding section is wired to OT_bind_garment (operators/op_bind.py); Fit
 section (plus the offset/thickness-scale, collision-resolution toggle,
 collision-margin, and smoothing-iterations fields in Parameters) is
-wired to OT_fit_garment (operators/op_fit.py). Pin Regions and Batch are
-still placeholder labels — later cards wire OT_batch_fit and the
-pin-group helpers in here.
+wired to OT_fit_garment (operators/op_fit.py). Pin Regions lists the
+active object's ``Pin_*`` vertex groups (``core.smoothing.
+PIN_GROUP_PREFIX`` is the naming source of truth) and is wired to the
+add/remove/assign/select helpers in operators/op_pin_groups.py, laid
+out the same way Blender's own Object Data Properties > Vertex Groups
+panel is (a filtered ``UIList`` + side add/remove column + an
+Assign/Select row using the same ``scene.tool_settings.
+vertex_group_weight`` the built-in panel uses). Batch is still a
+stubbed/disabled placeholder — a later card wires OT_batch_fit.
 """
 
 import bpy
 
 from .core import storage
+from .core.smoothing import PIN_GROUP_PREFIX
+
+
+class SCULPTTOOL_UL_pin_groups(bpy.types.UIList):
+    """Vertex-group list filtered down to ``Pin_*`` groups only.
+
+    ``SCULPTTOOL_PT_main.draw()`` binds this to the object's real
+    ``vertex_groups`` collection and its real ``active_index`` --
+    filtering only affects which rows are visible, so selecting a
+    visible row sets the actual active vertex group, exactly as
+    Blender's own filtered UILists work.
+    """
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        layout.prop(item, "name", text="", emboss=False, icon='GROUP_VERTEX')
+
+    def filter_items(self, context, data, propname):
+        vertex_groups = getattr(data, propname)
+        flags = [
+            self.bitflag_filter_item if vg.name.startswith(PIN_GROUP_PREFIX) else 0
+            for vg in vertex_groups
+        ]
+        return flags, []
 
 
 class SCULPTTOOL_PT_main(bpy.types.Panel):
@@ -60,14 +89,34 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
 
         pins_box = layout.box()
         pins_box.label(text="Pin Regions", icon='GROUP_VERTEX')
-        pins_box.label(text="(Pin vertex-group list — coming soon)")
+        if obj is not None and obj.type == 'MESH':
+            list_row = pins_box.row()
+            list_row.template_list(
+                "SCULPTTOOL_UL_pin_groups", "",
+                obj, "vertex_groups",
+                obj.vertex_groups, "active_index",
+                rows=4,
+            )
+            list_buttons = list_row.column(align=True)
+            list_buttons.operator("sculpttool.pin_group_add", icon='ADD', text="")
+            list_buttons.operator("sculpttool.pin_group_remove", icon='REMOVE', text="")
+
+            assign_row = pins_box.row(align=True)
+            assign_row.operator("sculpttool.pin_group_assign", text="Assign")
+            assign_row.operator("sculpttool.pin_group_select", text="Select")
+            pins_box.prop(context.scene.tool_settings, "vertex_group_weight", text="Weight")
+        else:
+            pins_box.label(text="Select a mesh object to manage Pin Regions.")
 
         batch_box = layout.box()
         batch_box.label(text="Batch", icon='RENDERLAYERS')
-        batch_box.label(text="(Target collection + Run Batch — coming soon)")
+        batch_box.enabled = False
+        batch_box.label(text="Target Collection: (not yet implemented)")
+        batch_box.label(text="Run Batch (not yet implemented)", icon='RENDERLAYERS')
 
 
 _classes = (
+    SCULPTTOOL_UL_pin_groups,
     SCULPTTOOL_PT_main,
 )
 
