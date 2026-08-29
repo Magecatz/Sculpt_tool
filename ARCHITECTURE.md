@@ -258,14 +258,28 @@ facing layer that wires user input to `core/`.
   that card. **That mitigation does not touch smoothing's cost.**
   `_edge_length_step`'s 16 sub-sweeps are Gauss-Seidel (each edge's
   correction applied immediately, so later edges in the same sweep see
-  earlier ones), which is inherently sequential and not vectorizable
-  without changing the convergence behavior the curvature-shrink fix
-  depends on. Reducing smoothing's batch cost therefore needs a different
-  lever — the adaptive/early-exit sub-sweep variant tracked as Backlog
-  card `5b232224-901f-4c7a-a991-42cb29b5627d`, or exposing sub-sweep
-  count as a batch-mode quality/speed trade-off — not more NumPy. Anyone
-  scoping the Batch card should plan against this explicitly rather than
-  assuming bulk vertex access covers it.
+  earlier ones), so a naive `foreach_get`/`foreach_set` rewrite cannot
+  vectorize them: the sequential dependency is what the curvature-shrink
+  fix's convergence behavior depends on. Reducing smoothing's batch cost
+  therefore needs a different lever than bulk vertex access. Three
+  candidates, none yet validated:
+
+  - the adaptive/early-exit sub-sweep variant tracked as Backlog card
+    `5b232224-901f-4c7a-a991-42cb29b5627d`;
+  - exposing sub-sweep count as a batch-mode quality/speed trade-off;
+  - **graph/edge-colored Gauss-Seidel** — partitioning edges into colors
+    where no two edges in a color share a vertex, then vectorizing within
+    each color. This is the standard way to parallelize PBD distance
+    constraints, and it *would* let NumPy attack the dominant cost. It
+    changes sweep ordering, so it is not free: it requires re-running the
+    tube shrinkage validation described in the smoothing entry below
+    before adoption. "Needs re-validation" is not the same as
+    "impossible", and this option should not be dismissed on the
+    strength of the sequential-dependency argument above, which only
+    rules out the naive rewrite.
+
+  Anyone scoping the Batch card should plan against this explicitly
+  rather than assuming bulk vertex access covers it.
 - **Cloth-sim refinement is opt-in only.** A physically-simulated
   drape pass is valuable for realism but nondeterministic and
   substep/margin-sensitive; it must never be part of the default
