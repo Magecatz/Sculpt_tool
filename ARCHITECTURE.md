@@ -304,6 +304,49 @@ facing layer that wires user input to `core/`.
   `core/collision.py`'s module boundary beyond taking two more
   already-computed lists as parameters).
 
+- **Smoothing's edge-length constraint now iterates internally per
+  outer iteration, rather than running a single relaxation sweep.**
+  `core/smoothing.py`'s `relax()` runs one damped Laplacian step
+  followed by `_EDGE_CORRECTION_SUBSTEPS` (16) internal Gauss-Seidel
+  sub-sweeps over all edges pulling each back toward its original
+  (base-mesh) length, per `smoothing_iterations`. A single sweep per
+  iteration was found (Tester report, Architect-confirmed) to leave
+  enough residual edge-length error that the next iteration's Laplacian
+  step compounded a fresh contraction on top of it: on a completely
+  clean, unperturbed, unpinned cylindrical/tube-shaped garment (zero
+  noise, zero pins — the textbook case section 1's anti-shrinkwrap goal
+  exists to protect) this produced ~9% radius shrinkage after 10
+  `smoothing_iterations`, a straightforward regression against that
+  goal, not an edge case. Looping the edge-length correction internally
+  fixes this: on this card's own re-measured synthetic tube repro
+  (32-segment, 20-ring cylinder, zero noise, zero pins), radius
+  shrinkage at 10 iterations dropped from ~9% to ~0.58%, and at 40
+  iterations it was ~0.575% — confirming the residual plateaus rather
+  than continuing to compound as `smoothing_iterations` grows. (The
+  Architect's own tuning pass, on a different synthetic mesh, measured
+  ~0.2% at the same sub-sweep count; the exact residual is mesh-
+  dependent, but the qualitative behavior — low-single-digit-percent or
+  better, non-compounding — matches.) `relax(iterations=...)`'s public
+  signature and semantics are unchanged: it still counts outer
+  Laplacian+constraint iterations exactly as before, and a fully-pinned
+  vertex (`pin_weight == 1.0`) is still exactly untouched. The ~16x
+  increase in inner-loop work is linear in sub-sweep count and cheap
+  relative to the pipeline's per-vertex BVH collision work, so this is
+  not a real performance concern at the scales this pipeline targets.
+  This also fully re-verified clean against the collision pass's
+  anchor-based tunneling correction (see above): a vertex snapped by
+  `anchor_position + anchor_normal * collision_margin` next to neighbors
+  that keep their full authored offset is a genuinely larger,
+  differently-shaped discontinuity than ordinary projection/collision
+  jitter, and the harder-converging edge-length constraint still keeps
+  a thin-geometry tunneling-correction scenario finite with bounded edge
+  lengths through smoothing, no blow-up — re-tested on this card, not
+  just assumed unaffected by the internal-loop change. A garment/body
+  pairing that triggers tunneling correction on many neighboring
+  vertices at once may still show a locally tauter or slower-to-relax
+  patch near the correction compared to ordinary noise elsewhere. Not a
+  bug; not solved further here.
+
 ## 8. Batch/automated extension
 
 `OT_batch_fit` is the intended batch entry point: point it at a
