@@ -671,8 +671,9 @@ facing layer that wires user input to `core/`.
     in `core/smoothing.py`'s docstrings so a future attempt does not
     re-derive the same dead end. The residual is accepted as a documented
     limitation, topology-dependent and worst on curved/hem-adjacent
-    geometry, tracked under this same bug card plus a new Backlog card for
-    any future genuine structural redesign beyond dual-trajectory.
+    geometry, tracked under this same bug card plus Backlog card
+    `e893bfdd-bedc-42dc-98c8-9150ed0b742e` for any future genuine
+    structural redesign beyond dual-trajectory.
 
 ## 8. Batch/automated extension
 

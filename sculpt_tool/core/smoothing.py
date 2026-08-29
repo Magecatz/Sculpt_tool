@@ -460,7 +460,8 @@ def relax(garment_obj, positions, pin_weights=None, iterations=1):
     structural redesign was attempted after the second prototype; this
     residual is accepted and tracked as a documented limitation rather
     than converged on further. See ARCHITECTURE.md section 7 for the full
-    writeup and the follow-up Backlog card tracking future attempts.
+    writeup and Backlog card `e893bfdd-bedc-42dc-98c8-9150ed0b742e`
+    tracking future attempts.
 
     Returns a new list of the same length/order. ``iterations <= 0``
     returns ``positions`` unchanged (see module docstring for why
