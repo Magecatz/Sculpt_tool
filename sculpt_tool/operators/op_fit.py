@@ -28,7 +28,7 @@ exactly.
 
 import bpy
 
-from ..core import collision, smoothing, solver, storage
+from ..core import binding, collision, smoothing, solver, storage
 
 SHAPE_KEY_NAME = "Fitted"
 
@@ -80,11 +80,15 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
 
             if getattr(settings, "use_collision_resolution", True):
                 collision_margin = getattr(settings, "collision_margin", 0.01)
+                target_positions, target_triangles = binding._world_space_triangles(
+                    target_body_obj
+                )
                 fitted_world = collision.resolve_collisions(
                     fitted_world,
                     projection.anchor_positions,
                     projection.anchor_normals,
-                    target_body_obj,
+                    target_positions,
+                    target_triangles,
                     collision_margin,
                 )
 

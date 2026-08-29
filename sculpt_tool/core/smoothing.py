@@ -217,7 +217,12 @@ def _laplacian_step(positions, neighbors, pin_weights):
 # instead of always running all 16) is the tracked candidate if real
 # Batch runtimes demand it: Backlog card
 # 5b232224-901f-4c7a-a991-42cb29b5627d. Do not re-tune this constant
-# downward on perf grounds without re-running the tube shrinkage test.
+# downward on perf grounds without re-running the tube shrinkage test --
+# that test now exists and is checked in:
+# tests/test_smoothing.py::TubeShrinkageTest (run via
+# `blender --background --factory-startup --python tests/run_tests.py`,
+# see ARCHITECTURE.md section 9), asserting < 1% radius shrinkage at both
+# 10 and 40 outer iterations on the same 32-segment/20-ring tube repro.
 _EDGE_CORRECTION_SUBSTEPS = 16
 
 
@@ -365,11 +370,48 @@ def relax(garment_obj, positions, pin_weights=None, iterations=1):
             f"vertex ({vertex_count})."
         )
 
-    if pin_weights is None:
-        pin_weights = [0.0] * vertex_count
-
     neighbors = _build_adjacency(mesh)
     original_edges = _original_world_edges(garment_obj)
+    return relax_positions(positions, neighbors, original_edges, pin_weights, iterations)
+
+
+def relax_positions(positions, neighbors, original_edges, pin_weights=None, iterations=1):
+    """Plain-data core of :func:`relax`.
+
+    Same algorithm and return contract as :func:`relax`, but takes
+    adjacency/rest-length data directly instead of a ``garment_obj`` --
+    :func:`relax` is only a thin wrapper around this that builds
+    ``neighbors`` (:func:`_build_adjacency`) and ``original_edges``
+    (:func:`_original_world_edges`) from a Blender object. This is what
+    makes the relaxation pass testable with synthetic meshes/plain data,
+    no ``bpy`` object required (tests/ builds ``neighbors``/
+    ``original_edges`` from a real ``bpy`` mesh too, since the test
+    harness runs inside Blender, but nothing here reaches back into
+    ``bpy`` itself).
+
+    ``neighbors`` is one list of edge-connected neighbor vertex indices
+    per vertex. ``original_edges`` is a list of ``(vertex_a, vertex_b,
+    original_length)`` tuples. Both must be consistent with ``len(
+    positions)`` vertices; ``pin_weights``, if given, must also match.
+    """
+    if iterations <= 0:
+        return positions
+
+    vertex_count = len(positions)
+    if len(neighbors) != vertex_count:
+        raise ValueError(
+            f"Got {len(neighbors)} adjacency entries, expected one per "
+            f"position ({vertex_count})."
+        )
+
+    if pin_weights is None:
+        pin_weights = [0.0] * vertex_count
+    elif len(pin_weights) != vertex_count:
+        raise ValueError(
+            f"Got {len(pin_weights)} pin weights, expected one per "
+            f"position ({vertex_count})."
+        )
+
     zero_pins = [0.0] * vertex_count
 
     current = list(positions)

@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.blend1
 *.blend2
+
+# Local test assets (third-party creator meshes - do not redistribute)
+Test_Items/

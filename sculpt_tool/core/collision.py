@@ -78,8 +78,6 @@ explicitly out of scope for this card, per ARCHITECTURE.md section 8.
 
 from mathutils.bvhtree import BVHTree
 
-from . import binding
-
 # Minimum anchor-to-fitted travel distance worth testing for tunneling.
 # Below this, the vertex barely moved off its anchor at all, so there is
 # no meaningful segment to cross anything with -- skip the extra ray_cast
@@ -91,10 +89,11 @@ def resolve_collisions(
     fitted_positions,
     anchor_positions,
     anchor_normals,
-    target_body_obj,
+    target_positions,
+    target_triangles,
     collision_margin,
 ):
-    """Push any garment vertex found inside ``target_body_obj`` back out.
+    """Push any garment vertex found inside the target body back out.
 
     ``fitted_positions`` is a list of world-space ``Vector`` positions, one
     per garment vertex, in vertex-index order (``core.solver.
@@ -105,6 +104,16 @@ def resolve_collisions(
     tunneling test described in the module docstring; all three lists
     must be the same length, in the same vertex-index order.
 
+    ``target_positions``/``target_triangles`` are the target body's
+    evaluated, world-space, triangulated surface --
+    ``core.binding._world_space_triangles(target_body_obj)``'s output.
+    This function takes plain geometry data rather than a Blender object
+    (the caller, ``operators/op_fit.py``, does the ``bpy``-facing
+    evaluation) so it is testable with synthetic data and has no ``bpy``
+    dependency of its own, matching ``_laplacian_step``/
+    ``_barycentric_weights``/``_triangle_frame``/``_local_frame``'s
+    convention elsewhere in ``core/``.
+
     Returns a new list of the same length and order: a vertex found
     interpenetrating (by either the local nearest-point test or the
     anchor-based tunneling test) is replaced with a position on the
@@ -112,15 +121,12 @@ def resolve_collisions(
     surface point's normal; every other vertex is passed through
     completely unchanged.
 
-    Raises ``ValueError`` if ``target_body_obj`` has no triangulatable
-    faces to build a BVH from (mirrors ``core.solver.project_mode_b``'s
-    handling of the same situation).
+    Raises ``ValueError`` if ``target_positions``/``target_triangles`` is
+    empty (mirrors ``core.solver.project_mode_b``'s handling of the same
+    situation on the caller side).
     """
-    target_positions, target_triangles = binding._world_space_triangles(target_body_obj)
     if not target_positions or not target_triangles:
-        raise ValueError(
-            f"Target body '{target_body_obj.name}' has no triangulatable faces."
-        )
+        raise ValueError("Target body has no triangulatable faces.")
 
     bvh = BVHTree.FromPolygons(target_positions, target_triangles)
 

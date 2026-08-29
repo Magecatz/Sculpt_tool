@@ -242,7 +242,11 @@ def bind_mode_b(garment_obj, source_body_obj):
     position). Because ``(normal, tangent, bitangent)`` is an orthonormal
     basis, ``hit_point + normal_offset*normal + tangent_offset_2d ·
     (tangent, bitangent)`` reconstructs the exact original garment
-    vertex position — see :func:`reconstruct_mode_b_position`.
+    vertex position to within floating-point precision — verified by the
+    round-trip regression test in ``tests/test_binding.py`` (this
+    reconstruction has no production call site of its own; ``core.solver.
+    project_mode_b`` re-derives the fitted position against a *different*
+    (target) body instead, per that module's docstring).
 
     Returns a :class:`ModeBBindResult` with one entry per garment
     vertex, in vertex-index order.
@@ -291,28 +295,6 @@ def bind_mode_b(garment_obj, source_body_obj):
         normal_offset=normal_offset,
         tangent_offset_2d=tangent_offset_2d,
     )
-
-
-def reconstruct_mode_b_position(body_obj, triangle_index, barycentric, normal_offset, tangent_offset_2d):
-    """Reconstruct a garment vertex's world position from a Mode B binding entry.
-
-    ``body_obj`` supplies the (evaluated, world-space, triangulated)
-    surface the binding is being re-evaluated against — the source body
-    at bind time, or a different target body at fit time. Recomputes the
-    triangle frame the same deterministic way :func:`bind_mode_b` does,
-    so this is exact (to floating point) when ``body_obj`` is the same
-    body the binding was computed against.
-    """
-    body_positions, body_triangles = _world_space_triangles(body_obj)
-    tri = body_triangles[triangle_index]
-    a, b, c = body_positions[tri[0]], body_positions[tri[1]], body_positions[tri[2]]
-    normal, tangent, bitangent = _triangle_frame(a, b, c)
-
-    u, v, w = barycentric
-    hit_location = a * u + b * v + c * w
-
-    tangent_u, tangent_v = tangent_offset_2d
-    return hit_location + normal * normal_offset + tangent * tangent_u + bitangent * tangent_v
 
 
 def detect_bind_mode(source_body_obj, target_body_obj):
