@@ -567,3 +567,86 @@ one `Fitted` shape key per target. It is a thin orchestration layer over
 the same `core/` modules the single-target `OT_fit_garment` uses — no
 separate batch-specific solver logic — so correctness fixes to the core
 pipeline apply to both paths automatically.
+
+## 9. Testing
+
+Blender 5.2.1 LTS is available in the development environment
+(`C:/Program Files/Blender Foundation/Blender 5.2/blender.exe`), so
+every card from here on is verified against a real Blender, not just
+statically. Earlier cards (including the two most numerically delicate
+passes — collision resolution and smoothing) predate this and shipped
+without a Tester able to run anything; this section exists so that gap
+doesn't recur and so every quantitative claim added below (or above, in
+section 7) has a checked-in script behind it, not just testimony from a
+session that's since gone.
+
+**Where tests live:** `tests/` at the repo root, next to `sculpt_tool/`.
+Stdlib `unittest`, not pytest — pytest isn't vendored into Blender's
+bundled Python and this avoids needing to maintain that.
+
+- `tests/run_tests.py` — the one runner. Discovers and runs every
+  `tests/test_*.py` module and exits non-zero on any failure/error, so
+  it's a real pass/fail gate:
+
+  ```
+  blender --background --factory-startup --python tests/run_tests.py
+  ```
+
+  Every future Tester should run this exact command rather than writing
+  a fresh throwaway script — that's what let section 7's numbers drift
+  into unreproducible testimony the first time.
+- `tests/common.py` — shared synthetic-mesh builders (`make_grid`,
+  `make_tube`, pin-group helpers) and a `update_scene()` helper for a
+  Blender scripting gotcha the harness ran into repeatedly: a plain
+  `obj.location = ...` or `v.co = ...` mutation doesn't synchronously
+  update `matrix_world`/the evaluated depsgraph the way a `bpy.ops`
+  operator call implicitly does, so a test calling `core/` functions
+  directly (no operator in between) must force that sync itself before
+  reading world-space positions.
+- `tests/test_*.py` — the suite itself: tube-shrinkage, pin-weight
+  boundary/monotonicity, the checked-in graded-boundary adversarial
+  sweep, thin-slab tunneling, Mode B reconstruction round-trip, Mode A
+  refit determinism/shape-key/base-mesh checks, and the registration
+  smoke test.
+- `tests/perf.py` — **opt-in only, not run by `run_tests.py`.**
+  33k-vertex-garment / 65k-triangle-body scale timing, matching section
+  7's own repro scale. Run explicitly (`blender --background
+  --factory-startup --python tests/perf.py`) when re-validating a
+  performance claim before it goes into this document.
+
+**Testable-with-plain-data core.** `_laplacian_step`, `_edge_length_step`
+(`core/smoothing.py`), `_barycentric_weights`, `_triangle_frame`,
+`_local_frame` (`core/binding.py`) already took plain data (`Vector`s,
+tuples) with no `bpy` object dependency. This card extended that pattern
+to the two remaining pipeline stages the seed tests needed:
+`core.smoothing.relax_positions` is the plain-data core `relax()` now
+wraps (adjacency + original-edge-length data instead of a `garment_obj`),
+and `core.collision.resolve_collisions` now takes `target_positions`/
+`target_triangles` directly instead of a `target_body_obj` (the caller,
+`operators/op_fit.py`, does the one `bpy`-facing evaluation call). This
+is the same extraction the pipeline/geometry card needs more broadly —
+coordinate with it rather than duplicating; this card only extracted the
+minimum needed to make the seed tests possible, not a full
+`core/geometry.py`/`core/pipeline.py` split.
+
+`core.binding.reconstruct_mode_b_position` was dead in production code
+(referenced only from a docstring — `core.solver.project_mode_b`
+re-derives against a *different*, target body rather than reconstructing
+the bind-time source position) and existed purely to make the round-trip
+verifiable. It has moved to `tests/test_binding.py` accordingly.
+
+**Standing rule:** every quantitative claim added to this document from
+now on must ship with a checked-in script (a test under `tests/`, or
+`tests/perf.py` for a timing figure) that reproduces it. Section 7's
+0.58% shrinkage, ~4.73s/~0.25s timings, 46%/1.46x overshoot figure, and
+the 0.70-0.91x/etc. pin-blend table all came from scripts that were
+never checked in, and whose sessions are gone — that's what this rule
+exists to prevent happening again. Where this card could reproduce one
+of those figures with a fresh, checked-in test, it did (tube shrinkage,
+tunneling, Mode B round-trip); where a figure was itself a seeded
+adversarial sweep whose exact original script/parameters were never
+recorded, the checked-in replacement
+(`test_smoothing.GradedBoundaryAdversarialSweepTest`) is a fresh
+reproduction in the same regime (documented in its own docstring as
+such, with its own measured ceiling), not a re-assertion of the original
+unreproducible number.
