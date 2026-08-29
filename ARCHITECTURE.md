@@ -195,11 +195,28 @@ facing layer that wires user input to `core/`.
   weights now blend roughly linearly in aggregate (measured ~0.70-0.91x/
   ~0.44-0.80x/~0.21-0.60x of an unpinned vertex's displacement at
   `pin_weight` 0.25/0.5/0.75, depending on iteration count and whether
-  the pin is an isolated vertex or part of a continuous pinned band) —
-  see the section 7 entry for the fix history and measured detail. An
+  the pin is an isolated vertex or part of a continuous pinned band). An
   earlier version scaled the edge-length correction's per-edge weight-
   sharing directly instead of blending at the outer-iteration level,
   which did not produce a linear blend (see section 7).
+
+  **Caveat a user of this parameter needs, not just an implementation
+  footnote:** the monotonic, bounded-by-unpinned behavior above holds in
+  every isolated-pin and uniform-band configuration tested, but *not*
+  universally. A **graded** pin weight (neighbors at different weights)
+  near the garment's own **free boundary**, combined with the ordinary
+  position noise a post-collision mesh already carries, can still let a
+  partially-pinned vertex move *more* than a fully unpinned one —
+  measured up to ~46% past the unpinned baseline, in roughly 3-4% of such
+  configurations. That combination is not exotic: a weight feathered
+  toward zero along a hem or cuff edge is close to the literal definition
+  of the `Pin_Hem`/`Pin_Cuff` selections this bullet names as the
+  motivating use case. So partial pin weights are now a large, real
+  improvement over the previous near-binary behavior — but they are a
+  strong tendency, not a guarantee, and a feathered hem is exactly where
+  the exception lives. Section 7 has the full measurement, the
+  comparison against pre-fix behavior on the same adversarial scenario,
+  and the tracking card (`8432ee45-20a9-47da-be6a-53e3beee39e6`).
 - **Bind mode override** — force Mode A/B instead of auto-detect, for
   edge cases where topology matches by coincidence but shouldn't be
   treated as correspondence.
@@ -221,14 +238,34 @@ facing layer that wires user input to `core/`.
 - **No garment-vs-garment layering.** The collision pass only resolves
   garment-vs-single-body interpenetration. Multiple garment layers (e.g.
   jacket over shirt) are out of scope for v1.
-- **Performance on dense meshes / large batch runs.** Per-vertex BVH
-  queries are the dominant cost; fine at moderate (tens-of-thousands
-  vertex) counts for interactive single-target use, but a batch job
-  fitting one garment across hundreds of target bodies risks becoming
-  slow if implemented with naive per-vertex Python loops. The batch
-  operator must use NumPy-vectorized bulk vertex access
-  (`foreach_get`/`foreach_set`) rather than per-vertex loops to be
-  viable at scale — called out explicitly on that card.
+- **Performance on dense meshes / large batch runs.** This bullet
+  originally named per-vertex BVH queries as the dominant cost. As of the
+  smoothing pass landing, **that is no longer true**: measured at
+  comparable scale, collision's per-vertex BVH work runs ~0.25s (~30k
+  vertices vs. a ~65k-triangle body) while the smoothing pass runs ~4.73s
+  (~33k vertices, `smoothing_iterations=10`) — smoothing is roughly **19x
+  collision**, and is now the pipeline's dominant per-target cost. See the
+  smoothing entry below for the full measurement. Both are fine at
+  moderate (tens-of-thousands vertex) counts for interactive
+  single-target use, but a batch job fitting one garment across hundreds
+  of target bodies multiplies the *whole* per-target cost, smoothing
+  included, and has not been measured at that scale.
+
+  Two distinct mitigations, and it matters that they are not the same
+  one: the batch operator must use NumPy-vectorized bulk vertex access
+  (`foreach_get`/`foreach_set`) rather than per-vertex Python loops for
+  mesh I/O and the projection/collision steps — called out explicitly on
+  that card. **That mitigation does not touch smoothing's cost.**
+  `_edge_length_step`'s 16 sub-sweeps are Gauss-Seidel (each edge's
+  correction applied immediately, so later edges in the same sweep see
+  earlier ones), which is inherently sequential and not vectorizable
+  without changing the convergence behavior the curvature-shrink fix
+  depends on. Reducing smoothing's batch cost therefore needs a different
+  lever — the adaptive/early-exit sub-sweep variant tracked as Backlog
+  card `5b232224-901f-4c7a-a991-42cb29b5627d`, or exposing sub-sweep
+  count as a batch-mode quality/speed trade-off — not more NumPy. Anyone
+  scoping the Batch card should plan against this explicitly rather than
+  assuming bulk vertex access covers it.
 - **Cloth-sim refinement is opt-in only.** A physically-simulated
   drape pass is valuable for realism but nondeterministic and
   substep/margin-sensitive; it must never be part of the default
@@ -376,8 +413,9 @@ facing layer that wires user input to `core/`.
   patch near the correction compared to ordinary noise elsewhere. Not a
   bug; not solved further here.
 
-- **Partial pin weights now blend roughly linearly (fixed; was closer to
-  binary than a smooth gradient).** Section 6 describes pin weight as
+- **Partial pin weights now blend roughly linearly (largely fixed; was
+  closer to binary than a smooth gradient — one measured residual
+  remains, at the bottom of this entry).** Section 6 describes pin weight as
   blending a vertex between "fully solved" and "rigid, unchanged." That
   was accurate for the damped Laplacian step alone (which scales each
   vertex's own displacement directly by `(1 - pin_weight)`) but not for
