@@ -184,7 +184,11 @@ facing layer that wires user input to `core/`.
 - **Pin regions** — one or more vertex groups (e.g. `Pin_Collar`,
   `Pin_Cuff_L`, `Pin_Cuff_R`, `Pin_Hem`) whose weight blends a vertex
   between "fully solved" and "rigid, unchanged" — keeps collars/cuffs/
-  hems garment-shaped even under aggressive fitting elsewhere.
+  hems garment-shaped even under aggressive fitting elsewhere. That
+  blend describes the Laplacian step accurately; the edge-length
+  correction step doesn't apply it the same way per vertex, which
+  changes how a *partial* pin weight actually behaves in practice — see
+  the known-limitations note in section 7.
 - **Bind mode override** — force Mode A/B instead of auto-detect, for
   edge cases where topology matches by coincidence but shouldn't be
   treated as correspondence.
@@ -329,10 +333,24 @@ facing layer that wires user input to `core/`.
   better, non-compounding — matches.) `relax(iterations=...)`'s public
   signature and semantics are unchanged: it still counts outer
   Laplacian+constraint iterations exactly as before, and a fully-pinned
-  vertex (`pin_weight == 1.0`) is still exactly untouched. The ~16x
-  increase in inner-loop work is linear in sub-sweep count and cheap
-  relative to the pipeline's per-vertex BVH collision work, so this is
-  not a real performance concern at the scales this pipeline targets.
+  vertex (`pin_weight == 1.0`) is still exactly untouched. **Correction
+  (Architect consult, post-merge):** this section originally claimed the
+  ~16x increase in inner-loop work was "cheap relative to the pipeline's
+  per-vertex BVH collision work." That was measured wrong. Actual
+  numbers on a ~33k-vertex synthetic tube at `smoothing_iterations=10`:
+  ~4.73s with this fix, versus ~0.50s before it. Measured against the
+  collision pass's own documented figure at comparable scale (~30k
+  vertices against a ~65k-triangle body in ~0.25s, cited above), the
+  fixed smoothing pass is now roughly **19x more expensive than
+  collision**, not cheap relative to it. The fixed sub-sweep count also
+  means this cost is linear in batch collection size — it scales
+  directly with however many target bodies a real Batch run processes,
+  and hasn't yet been measured at that scale. An adaptive/early-exit
+  sub-sweep variant (stopping once residual edge-length error falls
+  under some threshold instead of always running all 16) is a known,
+  unvalidated candidate to revisit if real Batch runtimes demand it —
+  left in Backlog as a conditional future item, not being built now.
+  Tracked as Backlog card `5b232224-901f-4c7a-a991-42cb29b5627d`.
   This also fully re-verified clean against the collision pass's
   anchor-based tunneling correction (see above): a vertex snapped by
   `anchor_position + anchor_normal * collision_margin` next to neighbors
@@ -346,6 +364,26 @@ facing layer that wires user input to `core/`.
   vertices at once may still show a locally tauter or slower-to-relax
   patch near the correction compared to ordinary noise elsewhere. Not a
   bug; not solved further here.
+
+- **Partial pin weights blend closer to binary than a smooth gradient.**
+  Section 6 describes pin weight as blending a vertex between "fully
+  solved" and "rigid, unchanged," and that's accurate for the damped
+  Laplacian step, which scales each vertex's own displacement directly
+  by `(1 - pin_weight)`. It is not accurate for the edge-length
+  correction sub-sweeps: `core/smoothing.py`'s `_edge_length_step()`
+  distributes each edge's correction between its two endpoints by
+  free-weight-sharing (`free_a / (free_a + free_b)`, where
+  `free_x = 1 - pin_weight_x`) rather than applying `(1 - pin_weight)`
+  to each vertex's own share independently. In aggregate this pulls a
+  partially-pinned vertex much closer to unpinned behavior than its
+  weight alone suggests — e.g. a vertex at `pin_weight = 0.5` ends up
+  moving roughly 0.76x-0.96x of an unpinned vertex's displacement, not
+  the ~0.5x the section 6 description implies. Only `pin_weight == 0.0`
+  (fully free) and `pin_weight == 1.0` (fully pinned, both correction
+  steps agree on that) behave as documented; the range in between is
+  softer than intended. Not fixed here — tracked as Backlog card
+  `1638a2d4-45d5-4264-9bc0-4e0ac339936b`, already promoted to To-Do, to
+  be addressed before or alongside the Pin-region UI card.
 
 ## 8. Batch/automated extension
 
