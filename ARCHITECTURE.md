@@ -435,17 +435,21 @@ facing layer that wires user input to `core/`.
     displacement across 1-10 outer iterations — exactly linear at 1
     iteration (0.75/0.50/0.25 to 4 decimal places), drifting somewhat
     further from exact as iterations and neighbor feedback accumulate,
-    but always monotonic in pin weight and never exceeding the unpinned
-    baseline.
+    but always monotonic in pin weight, and bounded by the unpinned
+    baseline in every isolated-vertex configuration tested (see the
+    graded-boundary caveat below for a configuration where this bound
+    does not hold).
   - **Continuous pinned band** (a realistic `Pin_Hem`-style selection
     where every pinned vertex's neighbors are also pinned): pin_weight
     0.25/0.5/0.75 measured ~0.84x/~0.68x/~0.47x at 10 outer iterations —
-    still monotonic and bounded by the unpinned baseline, but a visibly
-    softer blend than an isolated pin at the same weight and iteration
-    count, since neighboring pinned vertices' unpinned candidates
-    reinforce each other's advancement iteration over iteration. Still a
-    large improvement over the pre-fix 0.76x-0.96x near-binary plateau,
-    and worth knowing when tuning a specific garment's pinned regions.
+    still monotonic, and bounded by the unpinned baseline in every
+    uniform-band configuration tested (again, see the caveat below), but
+    a visibly softer blend than an isolated pin at the same weight and
+    iteration count, since neighboring pinned vertices' unpinned
+    candidates reinforce each other's advancement iteration over
+    iteration. Still a large improvement over the pre-fix 0.76x-0.96x
+    near-binary plateau, and worth knowing when tuning a specific
+    garment's pinned regions.
   - **Boundaries preserved exactly**: `pin_weight == 1.0` still produces
     bit-for-bit zero movement (including through overlapping-`Pin_*`-
     group sum-and-clamp to exactly 1.0), and `pin_weight == 0.0` is
@@ -457,6 +461,50 @@ facing layer that wires user input to `core/`.
     ~0.575% figures above within measurement noise) — expected, since
     with all pins at `0.0` the candidate computation is exactly the
     pre-fix code path, unchanged.
+  - **Known residual, NOT fully bounded: a graded pin-weight region near
+    a mesh boundary, combined with input position noise, can exceed the
+    unpinned baseline.** The isolated-pin and continuous-band bounds
+    above hold in every configuration tested, but neither covers a
+    *graded* pin region (neighboring vertices at different pin weights)
+    sitting near the mesh's own free boundary with some vertex-position
+    jitter present. That combination is not a contrived corner case — a
+    weight feathering out toward zero at a garment's free edge, combined
+    with the ordinary positional noise a real post-collision-resolution
+    mesh already has, is close to the literal definition of a real
+    `Pin_Hem`/`Pin_Cuff` selection. Tester found one such counterexample
+    (7x7 grid, radial graded band, one seed, 15 outer iterations): a
+    `pin_weight = 0.25` vertex moved ~6% more than the most-displaced
+    `pin_weight = 0.0` vertex in the same run. Reviewer independently
+    reproduced this on a broader sweep (flat-panel and cylindrical
+    hem-ring topologies, varying grid size/grading width/jitter
+    amplitude/seed/iteration count): the overshoot appears in roughly
+    3-4% of graded-boundary-plus-jitter configurations tried (0/24 with
+    zero jitter — noise is necessary to trigger it; it also vanishes on
+    interior, non-boundary-adjacent graded regions), and can be
+    considerably larger than the Tester's single data point — up to
+    ~46% on a flat panel and ~32% on a cylindrical hem-ring, both well
+    above the initial ~6% report. It does not grow monotonically with
+    iteration count (e.g. 26%/46%/11% overshoot at 10/15/20 iterations
+    on the same seed). Likely cause: each outer iteration's "fully
+    unpinned candidate" is computed from every vertex's own *current*,
+    already partially-blended position (and its neighbors' likewise
+    partially-blended positions), not from a truly independent, fully-
+    relaxed simulation — at a pin-weight gradient the edge-length
+    correction can assume more elasticity in a lagging neighbor than
+    that neighbor will actually exhibit once its own blend is applied,
+    producing a genuine (not measurement-noise) transient overshoot. For
+    context: the identical adversarial sweep run against the pre-fix
+    (`3ccbcac`) code fails far more often (48% of configurations vs.
+    3.9% here) and far more severely (worst-case 218% overshoot vs. 46%
+    here) — so despite this residual, the fix is a substantial
+    improvement over prior behavior even in the specific scenario that
+    exposes it, not only in the typical case. Not fixed here: tightening
+    this further looks like it needs a different candidate-computation
+    strategy (one that doesn't let an un-relaxed neighbor's lag leak into
+    the correction math at a pin gradient), not a small tweak to the
+    current approach — i.e. another design iteration, best done with a
+    fresh Architect look, rather than something to block this fix on.
+    Tracked as Backlog card `8432ee45-20a9-47da-be6a-53e3beee39e6`.
 
 ## 8. Batch/automated extension
 

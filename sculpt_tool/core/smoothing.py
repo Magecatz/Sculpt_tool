@@ -299,18 +299,34 @@ def relax(garment_obj, positions, pin_weights=None, iterations=1):
     otherwise-identical unpinned vertex's displacement (range across 1-10
     outer iterations; exactly linear at 1 iteration, drifting further
     from exact as outer iterations and inter-vertex coupling increase,
-    but always monotonic and never exceeding the unpinned baseline). A
-    continuous pinned band (e.g. a realistic ``Pin_Hem`` selection, where
-    every pinned vertex's neighbors are also pinned) drifts somewhat
-    further from exact linearity at higher iteration counts than an
-    isolated pinned vertex does, since neighboring pinned vertices'
-    unpinned "candidate" positions reinforce each other's advancement
-    iteration over iteration — still monotonic and bounded by the
-    unpinned baseline, just a softer blend than a single isolated pin at
-    the same weight. Not a regression against this fix's own goal (which
-    was fixing the 0.76x-0.96x near-binary plateau, not guaranteeing
-    exact linearity under every topology), but worth knowing when
-    reasoning about a specific garment's pinned-region behavior.
+    but always monotonic and bounded by the unpinned baseline in every
+    isolated-vertex and uniform-band configuration tested). A continuous
+    pinned band (e.g. a realistic ``Pin_Hem`` selection, where every
+    pinned vertex's neighbors are also pinned) drifts somewhat further
+    from exact linearity at higher iteration counts than an isolated
+    pinned vertex does, since neighboring pinned vertices' unpinned
+    "candidate" positions reinforce each other's advancement iteration
+    over iteration — still monotonic and bounded by the unpinned
+    baseline in every uniform-band configuration tested, just a softer
+    blend than a single isolated pin at the same weight. Not a
+    regression against this fix's own goal (which was fixing the
+    0.76x-0.96x near-binary plateau, not guaranteeing exact linearity
+    under every topology), but worth knowing when reasoning about a
+    specific garment's pinned-region behavior.
+
+    KNOWN RESIDUAL, not bounded in every topology: a *graded* pin region
+    (neighboring vertices at different pin weights) sitting near the
+    mesh's own free boundary, combined with vertex-position noise, can
+    produce a partially-pinned vertex that moves MORE than the most-
+    displaced unpinned vertex in the same run — measured up to ~46%
+    overshoot in synthetic testing, appearing in roughly 3-4% of such
+    boundary+noise configurations (never in noise-free or interior-only
+    ones). This is not a contrived case: a weight feathering toward zero
+    at a garment's free edge is close to the literal definition of a
+    ``Pin_Hem``/``Pin_Cuff`` selection. See ARCHITECTURE.md section 7 for
+    the full writeup and measured comparison against pre-fix behavior on
+    the same adversarial scenario; tracked as Backlog card
+    ``8432ee45-20a9-47da-be6a-53e3beee39e6``.
 
     Returns a new list of the same length/order. ``iterations <= 0``
     returns ``positions`` unchanged (see module docstring for why
