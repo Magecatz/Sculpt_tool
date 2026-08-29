@@ -184,11 +184,22 @@ facing layer that wires user input to `core/`.
 - **Pin regions** — one or more vertex groups (e.g. `Pin_Collar`,
   `Pin_Cuff_L`, `Pin_Cuff_R`, `Pin_Hem`) whose weight blends a vertex
   between "fully solved" and "rigid, unchanged" — keeps collars/cuffs/
-  hems garment-shaped even under aggressive fitting elsewhere. That
-  blend describes the Laplacian step accurately; the edge-length
-  correction step doesn't apply it the same way per vertex, which
-  changes how a *partial* pin weight actually behaves in practice — see
-  the known-limitations note in section 7.
+  hems garment-shaped even under aggressive fitting elsewhere. `relax()`
+  in `core/smoothing.py` implements this literally: each outer iteration
+  computes an entirely unpinned "fully solved" candidate position (the
+  same Laplacian + edge-length-correction math with no vertex treated as
+  pinned), then blends every vertex between its own pre-iteration
+  position and that candidate by its own `(1 - pin_weight)`. A vertex at
+  `pin_weight == 1.0` is therefore exactly unchanged every iteration; a
+  vertex at `pin_weight == 0.0` gets the candidate exactly. Partial
+  weights now blend roughly linearly in aggregate (measured ~0.70-0.91x/
+  ~0.44-0.80x/~0.21-0.60x of an unpinned vertex's displacement at
+  `pin_weight` 0.25/0.5/0.75, depending on iteration count and whether
+  the pin is an isolated vertex or part of a continuous pinned band) —
+  see the section 7 entry for the fix history and measured detail. An
+  earlier version scaled the edge-length correction's per-edge weight-
+  sharing directly instead of blending at the outer-iteration level,
+  which did not produce a linear blend (see section 7).
 - **Bind mode override** — force Mode A/B instead of auto-detect, for
   edge cases where topology matches by coincidence but shouldn't be
   treated as correspondence.
@@ -365,25 +376,135 @@ facing layer that wires user input to `core/`.
   patch near the correction compared to ordinary noise elsewhere. Not a
   bug; not solved further here.
 
-- **Partial pin weights blend closer to binary than a smooth gradient.**
-  Section 6 describes pin weight as blending a vertex between "fully
-  solved" and "rigid, unchanged," and that's accurate for the damped
-  Laplacian step, which scales each vertex's own displacement directly
-  by `(1 - pin_weight)`. It is not accurate for the edge-length
-  correction sub-sweeps: `core/smoothing.py`'s `_edge_length_step()`
-  distributes each edge's correction between its two endpoints by
-  free-weight-sharing (`free_a / (free_a + free_b)`, where
-  `free_x = 1 - pin_weight_x`) rather than applying `(1 - pin_weight)`
-  to each vertex's own share independently. In aggregate this pulls a
-  partially-pinned vertex much closer to unpinned behavior than its
-  weight alone suggests — e.g. a vertex at `pin_weight = 0.5` ends up
-  moving roughly 0.76x-0.96x of an unpinned vertex's displacement, not
-  the ~0.5x the section 6 description implies. Only `pin_weight == 0.0`
-  (fully free) and `pin_weight == 1.0` (fully pinned, both correction
-  steps agree on that) behave as documented; the range in between is
-  softer than intended. Not fixed here — tracked as Backlog card
-  `1638a2d4-45d5-4264-9bc0-4e0ac339936b`, already promoted to To-Do, to
-  be addressed before or alongside the Pin-region UI card.
+- **Partial pin weights now blend roughly linearly (fixed; was closer to
+  binary than a smooth gradient).** Section 6 describes pin weight as
+  blending a vertex between "fully solved" and "rigid, unchanged." That
+  was accurate for the damped Laplacian step alone (which scales each
+  vertex's own displacement directly by `(1 - pin_weight)`) but not for
+  the combination with the edge-length correction sub-sweeps:
+  `core/smoothing.py`'s `_edge_length_step()` used to distribute each
+  edge's correction between its two endpoints by free-weight-sharing
+  (`free_a / (free_a + free_b)`, where `free_x = 1 - pin_weight_x`)
+  rather than applying `(1 - pin_weight)` to each vertex's own share
+  independently. In aggregate this pulled a partially-pinned vertex much
+  closer to unpinned behavior than its weight alone suggested — a vertex
+  at `pin_weight = 0.5` moved roughly 0.76x-0.96x of an unpinned vertex's
+  displacement, not the ~0.5x the section 6 description implied. Only
+  `pin_weight == 0.0` and `pin_weight == 1.0` behaved as documented.
+
+  **Fixed** (bug card `1638a2d4-45d5-4264-9bc0-4e0ac339936b`): pin
+  weighting moved out of the per-edge/per-vertex math entirely and into
+  `relax()`'s outer loop. Each outer iteration now computes an entirely
+  unpinned "fully solved" candidate (the same `_laplacian_step` +
+  `_edge_length_step` internals, called with every pin weight forced to
+  `0.0`), then blends every vertex between its own pre-iteration position
+  and that candidate by its own `(1 - pin_weight)` —
+  `new = old * pin + candidate * (1 - pin)`. This is a direct
+  implementation of the section 6 language rather than an approximation
+  of it. `_laplacian_step`/`_edge_length_step` themselves are unchanged
+  (still pin-aware, still correct standalone building blocks); `relax()`
+  simply no longer calls them with the real per-vertex pin array.
+
+  An intermediate fix was tried and rejected before landing this one:
+  scaling `_edge_length_step`'s per-edge weight-sharing by each vertex's
+  own `(1 - pin_weight)` directly (splitting each edge's correction pool
+  50/50 between endpoints, then damping each endpoint's own half by its
+  own free weight) — Architect-recommended as the natural mirror of the
+  Laplacian step's self-referential scaling. It is correct for a single
+  isolated step given fixed neighbor positions, but empirically produced
+  a non-linear and even non-monotonic aggregate blend across multiple
+  outer iterations: on a disconnected-chain test isolating a single
+  pinned vertex from cross-talk, 10 outer iterations measured
+  pin_weight=0.25 moving *more* than pin_weight=0.5 (ratios 1.16 and 1.17
+  respectively against an unpinned baseline — both **above** the
+  unpinned vertex's own displacement), because a free neighbor's
+  correction share was capped independent of the pinned vertex's own
+  resistance, letting the neighbor "wind up" against the slower-moving
+  pinned vertex over repeated iterations faster than the reduced
+  per-step correction could cancel. The outer-iteration blend adopted
+  instead avoids this because pin weighting never participates in the
+  per-edge/per-neighbor math at all — it's a pure per-vertex
+  old/candidate interpolation applied once per iteration, so it cannot
+  introduce this kind of cross-vertex feedback.
+
+  Re-measured on this fix (`core/smoothing.py`'s `relax()`, disconnected-
+  chain and 2D-grid test meshes, `smoothing_iterations` 1-10):
+  - **Isolated pinned vertex** (single pinned vertex, unpinned
+    neighbors): pin_weight 0.25/0.5/0.75 moved ~0.70-0.91x / ~0.44-0.80x
+    / ~0.21-0.60x of an otherwise-identical unpinned vertex's
+    displacement across 1-10 outer iterations — exactly linear at 1
+    iteration (0.75/0.50/0.25 to 4 decimal places), drifting somewhat
+    further from exact as iterations and neighbor feedback accumulate,
+    but always monotonic in pin weight, and bounded by the unpinned
+    baseline in every isolated-vertex configuration tested (see the
+    graded-boundary caveat below for a configuration where this bound
+    does not hold).
+  - **Continuous pinned band** (a realistic `Pin_Hem`-style selection
+    where every pinned vertex's neighbors are also pinned): pin_weight
+    0.25/0.5/0.75 measured ~0.84x/~0.68x/~0.47x at 10 outer iterations —
+    still monotonic, and bounded by the unpinned baseline in every
+    uniform-band configuration tested (again, see the caveat below), but
+    a visibly softer blend than an isolated pin at the same weight and
+    iteration count, since neighboring pinned vertices' unpinned
+    candidates reinforce each other's advancement iteration over
+    iteration. Still a large improvement over the pre-fix 0.76x-0.96x
+    near-binary plateau, and worth knowing when tuning a specific
+    garment's pinned regions.
+  - **Boundaries preserved exactly**: `pin_weight == 1.0` still produces
+    bit-for-bit zero movement (including through overlapping-`Pin_*`-
+    group sum-and-clamp to exactly 1.0), and `pin_weight == 0.0` is
+    bit-for-bit identical to pre-fix behavior (the candidate computation
+    is the same zero-pin code path as before).
+  - **Curvature-shrink fix unaffected**: the zero-pin tube/cylinder
+    shrinkage re-test (32-segment, 20-ring cylinder) measured ~0.56% at
+    10 iterations and ~0.56% at 40 (plateauing, matching the ~0.58%/
+    ~0.575% figures above within measurement noise) — expected, since
+    with all pins at `0.0` the candidate computation is exactly the
+    pre-fix code path, unchanged.
+  - **Known residual, NOT fully bounded: a graded pin-weight region near
+    a mesh boundary, combined with input position noise, can exceed the
+    unpinned baseline.** The isolated-pin and continuous-band bounds
+    above hold in every configuration tested, but neither covers a
+    *graded* pin region (neighboring vertices at different pin weights)
+    sitting near the mesh's own free boundary with some vertex-position
+    jitter present. That combination is not a contrived corner case — a
+    weight feathering out toward zero at a garment's free edge, combined
+    with the ordinary positional noise a real post-collision-resolution
+    mesh already has, is close to the literal definition of a real
+    `Pin_Hem`/`Pin_Cuff` selection. Tester found one such counterexample
+    (7x7 grid, radial graded band, one seed, 15 outer iterations): a
+    `pin_weight = 0.25` vertex moved ~6% more than the most-displaced
+    `pin_weight = 0.0` vertex in the same run. Reviewer independently
+    reproduced this on a broader sweep (flat-panel and cylindrical
+    hem-ring topologies, varying grid size/grading width/jitter
+    amplitude/seed/iteration count): the overshoot appears in roughly
+    3-4% of graded-boundary-plus-jitter configurations tried (0/24 with
+    zero jitter — noise is necessary to trigger it; it also vanishes on
+    interior, non-boundary-adjacent graded regions), and can be
+    considerably larger than the Tester's single data point — up to
+    ~46% on a flat panel and ~32% on a cylindrical hem-ring, both well
+    above the initial ~6% report. It does not grow monotonically with
+    iteration count (e.g. 26%/46%/11% overshoot at 10/15/20 iterations
+    on the same seed). Likely cause: each outer iteration's "fully
+    unpinned candidate" is computed from every vertex's own *current*,
+    already partially-blended position (and its neighbors' likewise
+    partially-blended positions), not from a truly independent, fully-
+    relaxed simulation — at a pin-weight gradient the edge-length
+    correction can assume more elasticity in a lagging neighbor than
+    that neighbor will actually exhibit once its own blend is applied,
+    producing a genuine (not measurement-noise) transient overshoot. For
+    context: the identical adversarial sweep run against the pre-fix
+    (`3ccbcac`) code fails far more often (48% of configurations vs.
+    3.9% here) and far more severely (worst-case 218% overshoot vs. 46%
+    here) — so despite this residual, the fix is a substantial
+    improvement over prior behavior even in the specific scenario that
+    exposes it, not only in the typical case. Not fixed here: tightening
+    this further looks like it needs a different candidate-computation
+    strategy (one that doesn't let an un-relaxed neighbor's lag leak into
+    the correction math at a pin gradient), not a small tweak to the
+    current approach — i.e. another design iteration, best done with a
+    fresh Architect look, rather than something to block this fix on.
+    Tracked as Backlog card `8432ee45-20a9-47da-be6a-53e3beee39e6`.
 
 ## 8. Batch/automated extension
 
