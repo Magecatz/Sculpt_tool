@@ -587,24 +587,92 @@ facing layer that wires user input to `core/`.
     than the original 8-seed/2-grading-width/one-jitter-value grid found
     the residual with (needed to be widened because the fix reduces the
     overshoot enough that the original grid stopped finding a
-    representative worst case) — both figures checked-in-reproducible via
-    `tests/test_smoothing.py::GradedBoundaryAdversarialSweepTest`:
+    representative worst case), on the ORIGINAL fixed 7x7 grid only —
     **before** this fix, the wider grid's worst-case ratio was ~1.61x
     (partially-pinned vertex moving 61% more than the most-displaced
     unpinned one), with ~52% of the swept configurations showing at least
-    some overshoot; **after**, the same grid's worst case is ~1.19x, with
+    some overshoot; **after**, the same grid's worst case was ~1.19x, with
     well under half as many configurations affected. A substantial
-    reduction, not an elimination — the test's ceiling was tightened from
-    1.40 (calibrated to the pre-fix ~1.37x measurement on the narrower
-    original grid) to 1.22 (calibrated to the post-fix ~1.19x measurement
-    on the wider grid), and stays a live regression guard rather than a
-    ceiling nothing can reach anymore. Tightening this further is
-    unchanged from the assessment above: it looks like it needs a
-    different candidate-computation strategy (the Architect's documented
-    fallback is a "dual-trajectory" approach, gated on a fresh Architect
-    consult, not a redesign invented ad hoc) rather than another tweak to
-    this same lever. Remains tracked under the same card, now as an
-    accepted residual rather than an open fix.
+    reduction on that one topology, not an elimination.
+
+    **This 7x7-grid-only figure did not generalize (Reviewer rejection,
+    first re-review pass on this card).** A broader Reviewer sweep across
+    additional topologies (larger flat grids, a cylindrical hem-ring),
+    using the Reviewer's own measurement methodology, found this fix
+    reduced worst-case overshoot MAGNITUDE (1.81x → 1.28x in that sweep)
+    but not INCIDENCE — incidence on those wider topologies rose roughly
+    20-35x even as individual-occurrence magnitude improved, and a plain
+    12x12 grid alone exceeded the 7x7-tuned 1.22 test ceiling with no
+    exotic topology needed. Verdict (Architect-concurred): a
+    topology-specific lever-tweak that redistributed the problem rather
+    than converging on it.
+
+    **Re-verified honestly, on three topologies, using the checked-in
+    test's own methodology** (`tests/test_smoothing.py::
+    GradedBoundaryAdversarialSweepTest`, widened on the current pass to
+    sweep a 7x7 flat grid, a 12x12 flat grid, and a cylindrical hem-ring —
+    an open-ended tube graded from its own free boundary ring — each with
+    its own ceiling rather than one shared number, since the three do not
+    converge to the same worst case): worst-case ratio / incidence is
+    **1.19x / 25.0%** on the 7x7 grid, **1.30x / 25.5%** on the 12x12
+    grid, and **1.43x / 52.1%** on the cylindrical hem-ring. The fix
+    remains a real, substantial improvement over the pre-fix baseline on
+    every topology tested (pre-fix was ~1.61x/52% even on the easiest,
+    7x7 case), but incidence is clearly topology-dependent and highest on
+    curved geometry — a `Pin_Hem` selection on a sleeve/cuff is exactly
+    the shape most exposed to this residual. These are the honest,
+    currently-accurate figures; the Reviewer's own ~1.28x/20-35x-incidence
+    numbers from the rejection above used a different, incompatible sweep
+    methodology and should not be conflated with these.
+
+    **Two "dual-trajectory" structural redesigns were prototyped on this
+    same card (current pass) and rejected**, per an Architect consult,
+    since tightening the fix above further looked like it needed a
+    different candidate-computation strategy rather than another tweak to
+    the same lever. Both maintained a second `free` position trajectory
+    that, unlike the shipped fix's `candidate` (re-derived from `current`
+    every outer iteration), was never blended back toward the pin-weighted
+    `current` trajectory — on the theory that a truly independent,
+    never-lagging reference would remove the coupling mechanism instead of
+    damping its effect. Measured on the same three-topology sweep above:
+
+    - **Fully pin-independent** (`_laplacian_step` and `_edge_length_step`
+      both always called with an all-`0.0` pin array for `free`): worst
+      ratio 1.39x / 1.32x / 1.55x, incidence 65.6% / 32.3% / 72.2% on the
+      7x7 grid / 12x12 grid / hem-ring respectively — worse than the
+      shipped fix on every topology.
+    - **Hybrid** (`free`'s `_laplacian_step` call left at all-`0.0`, but
+      its `_edge_length_step` call given the real pin array): worst ratio
+      6.75x / 5.94x / 3.67x, incidence 93.0% / 93.8% / 85.4% — far worse
+      still, and this variant also broke `PinBlendMonotonicityTest`
+      outright (an isolated `pin_weight = 0.5` vertex displacing more than
+      both `pin_weight = 0.25` and the unpinned baseline, a guarantee that
+      had held under every prior design).
+
+    **Root cause of both failures (Architect-confirmed, architectural, not
+    a tuning miss):** neither variant ever resets the persistent `free`
+    trajectory back toward the pin anchor each outer iteration, the way
+    the shipped single-trajectory design resets `current` every iteration.
+    Without that reset, a highly-pinned vertex's `free` position still
+    gets dragged toward its neighbors' average every iteration by the
+    always-unpinned `_laplacian_step` call, with nothing bounding the
+    drift — it compounds across `iterations` instead of plateauing. This
+    means any dual-trajectory variant lacking a per-iteration reset toward
+    the pin anchor will fail this way regardless of how its edge-length
+    split is tuned; it is the per-iteration reset itself, not the internal
+    correction math, that actually bounds drift in the shipped design.
+
+    **Decision (Architect-approved close-out, current pass):** per the
+    Architect's stop condition — no clear win across all three topologies
+    on either prototype, and one broke a correctness invariant outright —
+    no third structural redesign was attempted. The shipped fix (real pin
+    array into `_edge_length_step`, single trajectory) remains as landed;
+    both dual-trajectory prototypes are reverted and documented here and
+    in `core/smoothing.py`'s docstrings so a future attempt does not
+    re-derive the same dead end. The residual is accepted as a documented
+    limitation, topology-dependent and worst on curved/hem-adjacent
+    geometry, tracked under this same bug card plus a new Backlog card for
+    any future genuine structural redesign beyond dual-trajectory.
 
 ## 8. Batch/automated extension
 
