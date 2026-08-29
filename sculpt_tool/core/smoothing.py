@@ -55,7 +55,7 @@ for why this outer-iteration blend replaced an earlier per-edge weighting
 scheme that turned out not to produce a linear aggregate blend (bug card
 1638a2d4-45d5-4264-9bc0-4e0ac339936b), and for why :func:`_edge_length_step`
 now gets the real pin array rather than an all-``0.0`` one too (bug card
-8432ee45-20a9-33d9-a852-6d1115a0bcda).
+8432ee45-20a9-47da-be6a-53e3beee39e6).
 
 Pure logic operating on mesh data (testable outside the UI), matching
 ``core/solver.py``/``core/collision.py``'s convention: no Blender-
@@ -256,7 +256,7 @@ def _edge_length_step(positions, original_edges, pin_weights):
     actual pin *blend* out to the outer iteration instead).
 
     :func:`relax` now calls this with the real per-vertex pin array again
-    (bug card 8432ee45-20a9-33d9-a852-6d1115a0bcda) — this is NOT a
+    (bug card 8432ee45-20a9-47da-be6a-53e3beee39e6) — this is NOT a
     revert of 1638a2d4's fix: the outer-iteration blend it introduced is
     unchanged and still the only place a vertex's own displacement gets
     scaled by its own ``(1 - pin_weight)``. What changed is narrower: this
@@ -353,7 +353,7 @@ def relax(garment_obj, positions, pin_weights=None, iterations=1):
     rigid, unchanged") and measures much closer to linear in practice:
     on an isolated pinned vertex, aggregate displacement at pin_weight
     0.25/0.5/0.75 was measured (before bug card
-    8432ee45-20a9-33d9-a852-6d1115a0bcda's change to
+    8432ee45-20a9-47da-be6a-53e3beee39e6's change to
     :func:`_edge_length_step`, below) at ~0.70-0.91x / ~0.44-0.80x /
     ~0.21-0.60x of an otherwise-identical unpinned vertex's displacement
     (range across 1-10 outer iterations; exactly linear at 1 iteration,
@@ -385,7 +385,7 @@ def relax(garment_obj, positions, pin_weights=None, iterations=1):
     contrived case: a weight feathering toward zero at a garment's free
     edge is close to the literal definition of a ``Pin_Hem``/``Pin_Cuff``
     selection. Root cause (bug card
-    8432ee45-20a9-33d9-a852-6d1115a0bcda, following up on
+    8432ee45-20a9-47da-be6a-53e3beee39e6, following up on
     1638a2d4-45d5-4264-9bc0-4e0ac339936b): each outer iteration's
     "candidate" was computed from every vertex's own CURRENT,
     already-partially-blended position, and — because
@@ -409,7 +409,7 @@ def relax(garment_obj, positions, pin_weights=None, iterations=1):
     strategy (a "dual-trajectory" approach was proposed as the fallback),
     not a further tweak to this same lever — consult the Architect before
     attempting that. See ARCHITECTURE.md section 7 for the full writeup;
-    tracked as bug card ``8432ee45-20a9-33d9-a852-6d1115a0bcda``.
+    tracked as bug card ``8432ee45-20a9-47da-be6a-53e3beee39e6``.
 
     Returns a new list of the same length/order. ``iterations <= 0``
     returns ``positions`` unchanged (see module docstring for why

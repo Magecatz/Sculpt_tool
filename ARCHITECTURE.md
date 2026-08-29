@@ -216,7 +216,7 @@ facing layer that wires user input to `core/`.
   strong tendency, not a guarantee, and a feathered hem is exactly where
   the exception lives. Section 7 has the full measurement, the
   comparison against pre-fix behavior on the same adversarial scenario,
-  and the tracking card (`8432ee45-20a9-33d9-a852-6d1115a0bcda`) — now
+  and the tracking card (`8432ee45-20a9-47da-be6a-53e3beee39e6`) — now
   partially fixed, see section 7.
 - **Bind mode override** — force Mode A/B instead of auto-detect, for
   edge cases where topology matches by coincidence but shouldn't be
@@ -558,7 +558,7 @@ facing layer that wires user input to `core/`.
     the correction math at a pin gradient), not a small tweak to the
     current approach — i.e. another design iteration, best done with a
     fresh Architect look, rather than something to block this fix on.
-    Tracked as bug card `8432ee45-20a9-33d9-a852-6d1115a0bcda`.
+    Tracked as bug card `8432ee45-20a9-47da-be6a-53e3beee39e6`.
 
     **Partially fixed** (same card, `fix/pin-boundary-overshoot`): per
     the Architect's directed cheap experiment (try this before any

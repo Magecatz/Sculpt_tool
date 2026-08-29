@@ -127,8 +127,9 @@ class PinBlendMonotonicityTest(unittest.TestCase):
 
 
 class GradedBoundaryAdversarialSweepTest(unittest.TestCase):
-    """ARCHITECTURE.md section 7 / bug card 8432ee45-20a9-33d9-a852-
-    6d1115a0bcda: a graded pin-weight region near the garment's own free
+    """ARCHITECTURE.md section 7 / bug card
+    8432ee45-20a9-47da-be6a-53e3beee39e6: a graded pin-weight region near
+    the garment's own free
     boundary, combined with position noise, can let a partially-pinned
     vertex move MORE than the most-displaced fully-unpinned vertex in the
     same run. This is the seeded, checked-in regression guard for that
