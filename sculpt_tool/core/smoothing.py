@@ -197,8 +197,27 @@ def _laplacian_step(positions, neighbors, pin_weights):
 # instead of compounding as `iterations` grows. 16 was the Architect's
 # own tested figure (~0.2% shrinkage at both 10 and 40 outer iterations
 # on a synthetic tube case, confirming a plateau rather than continued
-# growth) and stays cheap relative to the pipeline's per-vertex BVH
-# collision work even at this ~16x increase in sweep count.
+# growth).
+#
+# This comment used to claim the resulting ~16x increase in sweep count
+# "stays cheap relative to the pipeline's per-vertex BVH collision work."
+# That was measured wrong and has been retracted -- see ARCHITECTURE.md
+# section 7. Real numbers (~33k-vertex synthetic tube,
+# smoothing_iterations=10): ~4.73s with these sub-sweeps versus ~0.50s
+# with a single sweep, against the collision pass's ~0.25s at comparable
+# scale. The sub-sweeps make smoothing roughly 19x MORE expensive than
+# collision, and the dominant per-target cost in the whole fit pipeline.
+# It is a deliberate correctness-over-speed trade (the alternative is the
+# several-percent shrinkage described above), but it is not cheap, and
+# because the sweep count is fixed the cost scales linearly with a Batch
+# run's collection size. Note also that these sweeps are Gauss-Seidel and
+# therefore sequential -- the Batch card's NumPy/foreach_get bulk-vertex
+# mitigation does not speed this up. An adaptive/early-exit variant
+# (stopping once residual edge-length error falls under a threshold
+# instead of always running all 16) is the tracked candidate if real
+# Batch runtimes demand it: Backlog card
+# 5b232224-901f-4c7a-a991-42cb29b5627d. Do not re-tune this constant
+# downward on perf grounds without re-running the tube shrinkage test.
 _EDGE_CORRECTION_SUBSTEPS = 16
 
 
