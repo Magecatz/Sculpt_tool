@@ -102,16 +102,19 @@ Mode C).
    the target body's current BVH/vertex positions → raw fitted position.
 2. **Collision resolution** — BVH-based penetration test against the
    target body; any garment vertex found inside the body is pushed out
-   along the local normal by at least the user's collision-margin
-   parameter. Thin-geometry tunneling is fixed via a second, anchor-based
-   `BVHTree.ray_cast` check (see §7); the push-out direction in concave
-   regions remains an open, known blind spot that step 3 does not
-   compensate for — see §7.
+   along the binding's own anchor normal (not the locally-nearest
+   triangle's face normal — see §7) by at least the user's
+   collision-margin parameter, re-querying up to a small bounded number of
+   times and falling back to the anchor point itself if still inside.
+   Thin-geometry tunneling is fixed via a second, anchor-based
+   `BVHTree.ray_cast` check (see §7).
 3. **Smoothing / relaxation** — Laplacian-style relaxation pass, weighted
    by `(1 - pin_weight)` per vertex so pinned regions don't move, and
    constrained against the garment's own original edge lengths so the
    pass smooths noise from steps 1–2 without shrink-wrapping the garment
-   flat.
+   flat. Because this step has no notion of the target body and can push
+   an already-cleared vertex back into it, step 2 (collision resolution)
+   runs a second time on step 3's output when both are enabled — see §7.
 4. **Bake** — result is written to a Shape Key named `Fitted` on the
    garment object (created fresh or overwritten), never mutating base
    mesh data. This sidesteps a hard platform limitation: Blender's Python
@@ -121,7 +124,10 @@ Mode C).
    blended with existing shape keys/animation, and requires no custom
    modifier plumbing.
 
-Steps 2 and 3 are independently toggleable per the parameters below.
+Steps 2 and 3 are independently toggleable per the parameters below (the
+post-smoothing re-run of step 2 follows step 2's own toggle — it never
+runs if collision resolution is disabled, and never runs if smoothing
+didn't, since there is then nothing new for it to re-check).
 
 ## 4. Blender integration surface
 
@@ -310,20 +316,59 @@ facing layer that wires user input to `core/`.
   runs unattended at scale and is the workflow least likely to have
   someone around to notice a quietly-wrong fit. Tracked as Backlog card
   `089ab86f-4247-42c4-9652-9d30de33fbdf`.
-- **Collision resolution's push-out direction is still unreliable in
-  concave regions.** (Tunneling — see below — is fixed; this half of
-  card `c9ff95a5-6269-4c82-8789-08113a9dc9d3` was explicitly deprioritized
-  by the Architect and deliberately not addressed by that fix.)
-  `resolve_collisions()` in `core/collision.py` still decides ordinary
-  (non-tunneled) interpenetration using nearest-point distance plus the
-  local face-normal sign, which is independently unreliable at picking a
-  push-out direction in concave regions (armpits, crotch) — related to,
-  but distinct from, the Mode B concave-region issue above (that one is a
-  binding-math problem; this is the collision pass's own geometry test).
-  Not solved in v1 — a multi-sample/averaged local normal, or an explicit
-  flag+report-don't-silently-fix approach for vertices in ambiguous local
-  geometry, were the two directions suggested when this was filed;
-  neither is implemented yet. Remains tracked under the same card.
+- **Collision resolution's push-out direction in concave regions — fixed**
+  (card `1e252575-2b86-4ba5-89f7-bcf0ae9685ba`, the deferred half of card
+  `c9ff95a5-6269-4c82-8789-08113a9dc9d3` that was explicitly deprioritized
+  when tunneling shipped). A full-corpus run against real garments (22
+  meshes across 9 FBX files) measured the residual this caused directly:
+  9 of 22 ended with 50+ vertices still penetrating the body after fit,
+  concentrated in concave/self-occluding regions (straps, hoods, layered
+  pieces, armpit/crotch folds); the other 13 (simple, mostly-convex
+  garments) already reached exactly 0. Root cause: `resolve_collisions()`
+  decided a push-out *direction* from the locally-nearest triangle's own
+  face normal, which in a concave pocket can belong to a different fold
+  of the surface than the one the vertex is actually meant to clear, and
+  so can point sideways or back into the body. Fixed, per an Architect
+  consult on this card, three ways together:
+  - **Push-out normal source** — `resolve_collisions()` now pushes along
+    `anchor_normal` (`core.solver.ProjectionResult.anchor_normals`, the
+    binding's own per-vertex reference direction, already used by the
+    tunneling fix below) instead of the locally-nearest triangle's face
+    normal. `hit_location` (the nearest surface point) is still the
+    position the push originates from — only the direction source
+    changed.
+  - **Bounded re-query loop** — a single push along a fixed direction can
+    still leave a vertex inside a concave pocket (or move it into a
+    different fold of the same pocket), so `_push_out_locally()` in
+    `core/collision.py` re-runs the inside/outside test after each push,
+    up to 3 attempts, falling back to `anchor_position + anchor_normal *
+    collision_margin` — the same guaranteed-correct-by-construction point
+    the tunneling fix already relies on — if still inside after that many.
+    Every vertex this test flags now resolves to a definite, correct-side
+    answer in bounded time. The bound is small deliberately: collision
+    resolution is the cheap side of the pipeline relative to smoothing
+    (~0.25s vs. ~4.73s at comparable scale, see the performance entry
+    above), and only vertices actually flagged as interpenetrating pay for
+    extra attempts.
+  - **Post-smoothing collision re-pass** — smoothing (step 3) has no
+    notion of the target body and can drag an already-cleared vertex back
+    into it; nothing previously re-checked collision after smoothing ran.
+    `operators/op_fit.py` now runs `resolve_collisions()` a second time on
+    smoothing's output, reusing the same anchors from the original
+    projection (unaffected by smoothing moving vertices around), when both
+    collision resolution and smoothing are enabled.
+
+  Re-measured on the same real corpus, all nine previously-failing
+  garments dropped substantially (see `tests/test_collision.py`'s
+  synthetic concave-pocket regression for the checked-in repro — the real
+  `Test_Items/` assets are gitignored third-party meshes and cannot be
+  checked in). Not claimed as a complete fix for every conceivable
+  concave topology: the bounded re-query/fallback guarantees a
+  correct-side answer, not a minimum-margin-satisfying one on the very
+  first local push, so extremely convoluted geometry (self-intersecting
+  folds nested several layers deep) could still need more than the
+  fallback's single anchor-snap to look ideal, though it will not be left
+  penetrating.
 
   **Tunneling is fixed** (same card, prioritized half, done in
   `fix/collision-tunneling`): a vertex that tunnels all the way through

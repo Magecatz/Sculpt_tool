@@ -24,6 +24,21 @@ output is bit-identical to the collision-resolution-only pipeline. With
 collision resolution also disabled, this reproduces the original
 (project + bake only) card's raw, possibly-interpenetrating output
 exactly.
+
+When both collision resolution and smoothing run, collision resolution
+also runs a SECOND time, after smoothing, on the smoothed result (fixed
+by card 1e252575-2b86-4ba5-89f7-bcf0ae9685ba, per an Architect consult:
+smoothing's Laplacian step has no idea the target body exists and can
+readily drag an already-cleared vertex back into it — the pre-smoothing
+collision pass alone left a measurable residual of interpenetrating
+vertices on real garments for exactly this reason). This reuses the same
+``projection.anchor_positions``/``anchor_normals`` from the original
+projection rather than recomputing them: the anchor is a property of the
+binding's correspondence to the target body, not of the garment's current
+position, so smoothing moving vertices around does not invalidate it.
+Skipped (same as the first pass) when collision resolution is disabled,
+and skipped entirely when ``smoothing_iterations == 0`` (nothing moved
+after the first collision pass, so there is nothing new to re-check).
 """
 
 import bpy
@@ -78,7 +93,8 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
             projection = solver.project_garment(garment_obj, target_body_obj, offset_scale)
             fitted_world = projection.fitted_positions
 
-            if getattr(settings, "use_collision_resolution", True):
+            use_collision_resolution = getattr(settings, "use_collision_resolution", True)
+            if use_collision_resolution:
                 collision_margin = getattr(settings, "collision_margin", 0.01)
                 target_positions, target_triangles = binding._world_space_triangles(
                     target_body_obj
@@ -101,6 +117,25 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
                     pin_weights,
                     smoothing_iterations,
                 )
+
+                if use_collision_resolution:
+                    # Smoothing has no notion of the target body and can
+                    # push an already-cleared vertex back into it (see the
+                    # module docstring) -- re-run collision resolution on
+                    # the smoothed result. Same anchors as the first pass:
+                    # they describe the binding's correspondence to the
+                    # target body, not the garment's current position, so
+                    # smoothing moving vertices around doesn't invalidate
+                    # them. `target_positions`/`target_triangles`/
+                    # `collision_margin` are already computed above.
+                    fitted_world = collision.resolve_collisions(
+                        fitted_world,
+                        projection.anchor_positions,
+                        projection.anchor_normals,
+                        target_positions,
+                        target_triangles,
+                        collision_margin,
+                    )
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
