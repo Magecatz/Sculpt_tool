@@ -358,17 +358,67 @@ facing layer that wires user input to `core/`.
     projection (unaffected by smoothing moving vertices around), when both
     collision resolution and smoothing are enabled.
 
-  Re-measured on the same real corpus, all nine previously-failing
-  garments dropped substantially (see `tests/test_collision.py`'s
-  synthetic concave-pocket regression for the checked-in repro — the real
-  `Test_Items/` assets are gitignored third-party meshes and cannot be
-  checked in). Not claimed as a complete fix for every conceivable
-  concave topology: the bounded re-query/fallback guarantees a
-  correct-side answer, not a minimum-margin-satisfying one on the very
-  first local push, so extremely convoluted geometry (self-intersecting
-  folds nested several layers deep) could still need more than the
-  fallback's single anchor-snap to look ideal, though it will not be left
-  penetrating.
+  Re-measured on the same real corpus via `tests/corpus_repro.py` (opt-in,
+  `Test_Items/`-dependent, perf.py-style — see its docstring; also runs a
+  real in-process A/B against the pre-fix algorithm, reimplemented inline
+  from the fix's own diff, and an independent ray-parity inside/outside
+  test rather than `collision.py`'s own test, matching the method this
+  card's original measurement used). `tests/test_collision.py`'s
+  synthetic concave-pocket regression remains the fast-suite coverage
+  (the real `Test_Items/` assets are gitignored third-party meshes and
+  cannot be checked in, so `corpus_repro.py` is opt-in rather than part of
+  the gate).
+
+  Corrected claim, replacing this section's original unqualified "all
+  nine dropped substantially" (sent back on review for being asserted
+  with no regenerable numbers): **seven of the nine measurably dropped
+  substantially** (old-algorithm-after → new-algorithm-after residual
+  count: Bunny Suit 251→63, Socks & Harness 423→204, cybercroptop Body
+  336→162, Straps by Vinuzhka 190→38, Sweater 156→45, Zip Up 193→136,
+  Hood Crop 92→42 — roughly −30% to −80% each). The remaining two behave
+  differently, investigated directly rather than papered over:
+  - **pants by Vinuzhka: 233→225, a real but small improvement (~−3%),**
+    not the near-elimination the other seven show. Confirmed (via
+    `tests/corpus_repro.py`'s own instrumentation) that every one of the
+    225 residual vertices *was* pushed by `resolve_collisions()` — the
+    bounded re-query/fallback ran, just didn't clear the independent
+    parity test's stricter global standard on this mesh's denser
+    concave folds. This is the documented "not claimed as a complete fix
+    for every conceivable concave topology" limit above actually showing
+    up on a real asset, not a new defect.
+  - **Cube.012 (Lingerie): 332→332, exactly unchanged.** Confirmed (same
+    instrumentation) that all 332 residual vertices were *never* flagged
+    as interpenetrating by `resolve_collisions()`'s own local
+    nearest-point/normal-sign test under EITHER algorithm version — this
+    card's fix only changes push-out behavior for a vertex already
+    flagged as inside, so it is structurally unable to affect a vertex
+    neither version's local test ever flags. This is a real, pre-existing
+    blind spot: the local test and a global ray-parity test can disagree
+    (root-caused here to part of this asset's raw fitted geometry, before
+    any collision pass, landing implausibly far from the body — a Mode A
+    binding/drape artifact on this mesh's decorative geometry, not a
+    collision-resolution issue) — orthogonal to this card's concave
+    push-out-direction fix and out of its scope, tracked for whoever picks
+    up collision resolution next rather than fixed here.
+
+  This card's own review cycle produced two independent real-corpus
+  measurements of these same two garments that *disagreed with each
+  other* (one found both improved, the other found pants roughly
+  unchanged and Cube.012 got worse); `tests/corpus_repro.py`'s numbers
+  above are a third, checked-in-and-regenerable measurement and agree
+  with neither exactly, but land closest to "pants improves modestly,
+  Cube.012 doesn't improve" — and, per the investigation above, confirm
+  Cube.012 did not get worse, it is bit-for-bit identical before and
+  after this card's fix for the vertices in question.
+
+  Not claimed as a complete fix for every conceivable concave topology:
+  the bounded re-query/fallback guarantees a correct-side answer against
+  `resolve_collisions()`'s own local test, not a minimum-margin-satisfying
+  one against every possible independent measurement, on the very first
+  local push, so extremely convoluted geometry (self-intersecting folds
+  nested several layers deep, or a global test disagreeing with the local
+  one as above) could still need more than the fallback's single
+  anchor-snap to look ideal.
 
   **Tunneling is fixed** (same card, prioritized half, done in
   `fix/collision-tunneling`): a vertex that tunnels all the way through
