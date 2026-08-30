@@ -116,6 +116,46 @@ def make_tube(name, segments=32, rings=20, radius=1.0, height=2.0, location=(0.0
     return obj
 
 
+def make_valley(name, arm_length=2.0, y0=-1.0, y1=1.0, location=(0.0, 0.0, 0.0)):
+    """A V-shaped concave crease (two large flat quads meeting at a fold
+    along the line x=0, z=0, extruded along Y) -- a minimal stand-in for a
+    body's concave regions (armpit, crotch) where two surface folds meet
+    at an inward angle. Solid material fills ``z <= -x`` for ``x <= 0``
+    and ``z <= x`` for ``x >= 0`` (i.e. everything "below" the fold, the
+    ordinary convention for a body's outer surface); the crease at the
+    origin line is the concave feature.
+
+    Left quad spans ``x`` in ``[-arm_length, 0]`` with outward normal
+    ``(1, 0, 1)/sqrt(2)``; right quad spans ``x`` in ``[0, arm_length]``
+    with outward normal ``(-1, 0, 1)/sqrt(2)`` -- both point "up and
+    toward the crease", i.e. away from the solid on their own local
+    surface, which is exactly what makes a vertex sitting near the crease
+    ambiguous: the two nearby surfaces disagree considerably on push-out
+    direction. See ``tests/test_collision.py``'s
+    ``ConcavePushOutDirectionTest`` for how this reproduces the residual
+    penetration measured on real garments in concave/self-occluding
+    regions (card 1e252575-2b86-4ba5-89f7-bcf0ae9685ba).
+    """
+    bm = bmesh.new()
+    lA1 = bm.verts.new((-arm_length, y0, arm_length))
+    lA2 = bm.verts.new((0.0, y0, 0.0))
+    lA3 = bm.verts.new((0.0, y1, 0.0))
+    lA4 = bm.verts.new((-arm_length, y1, arm_length))
+    bm.faces.new((lA1, lA2, lA3, lA4))
+
+    rA1 = bm.verts.new((0.0, y0, 0.0))
+    rA2 = bm.verts.new((arm_length, y0, arm_length))
+    rA3 = bm.verts.new((arm_length, y1, arm_length))
+    rA4 = bm.verts.new((0.0, y1, 0.0))
+    bm.faces.new((rA1, rA2, rA3, rA4))
+    bm.normal_update()
+
+    obj = link_object(name, bm)
+    obj.location = location
+    update_scene()
+    return obj
+
+
 def make_pin_group(obj, name, vertex_weights):
     """Create a ``Pin_``-prefixed vertex group on ``obj``.
 
