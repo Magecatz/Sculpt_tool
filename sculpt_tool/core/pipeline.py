@@ -106,9 +106,7 @@ def fit_once(garment_obj, target_body_obj, params, depsgraph, relax_ctx=None):
     """
     target_ctx = geometry.TargetContext.build(target_body_obj, depsgraph)
 
-    projection = solver.project_garment(
-        garment_obj, target_ctx, depsgraph, params.offset_scale
-    )
+    projection = solver.project_garment(garment_obj, target_ctx, params.offset_scale)
     fitted = projection.fitted_positions
 
     if params.use_collision_resolution:

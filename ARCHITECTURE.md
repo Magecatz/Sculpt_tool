@@ -82,11 +82,22 @@ by the bind operator based on topology match, are supported:
 - **Mode B — cross-topology.** Source and target bodies are different
   meshes entirely (a genuinely different/customized character). Built via
   `BVHTree.FromObject` nearest-surface projection: each garment vertex
-  stores the source body's `triangle_index`, barycentric weights
-  (u, v, w), a signed `normal_offset` (distance off the surface), and a
+  stores a signed `normal_offset` (distance off the surface) and a
   `tangent_offset` (2D, in-plane component) to reduce misassignment near
-  seams and thin geometry. Re-evaluated against the target body's BVH at
-  fit time.
+  seams and thin geometry, plus (as of the bind-time-freeze card, schema
+  v2) the bind-time anchor point itself — frozen in the **source body's
+  own local object space** — and the source body's `matrix_world` at that
+  same moment. The BVH nearest-surface hit's `triangle_index`/barycentric
+  weights are also stored, but as **diagnostics only**: they index into
+  the source body's own triangulation at bind time and are never read
+  back at fit time (see below). Re-evaluated against the target body's
+  BVH at fit time by transforming the frozen local anchor back to world
+  space with the frozen bind-time matrix — no read of the source body's
+  mesh at fit time at all.
+- **Mode A's "no Target Body set" trap (schema v2 fix).** A Mode A
+  binding also now stores the source body's vertex count at bind time.
+  Auto-detection needs a Target Body to compare topology against at all;
+  see below.
 
 Binding data is persisted as **custom attributes on the garment mesh**
 (`bpy.types.Mesh.attributes`), plus object-level custom properties
@@ -95,6 +106,39 @@ This means a bound garment stays bound across file save/reload with no
 external cache file, and undo works normally. No dependency is taken on
 UV-space correspondence for v1 (see Risks — noted as a possible future
 Mode C).
+
+**Binding is bind-time-frozen — no add-on output may re-enter as input
+(schema v2, closes cards 089ab86f, 1f8e8594, and a third, previously
+uncarded defect in the same family; see section 7 for the full writeup
+of all three):**
+
+- **Mode B's anchor is a bind-time snapshot, not a live re-derivation.**
+  `project_mode_b` never reads the source body's mesh, never resolves the
+  source body object by name, and never fails because the source body was
+  renamed, deleted, or edited after bind — the frozen local-space anchor
+  plus the frozen bind-time `matrix_world` are the only Mode B fit-time
+  inputs besides the target body. Editing/re-sculpting/deleting/renaming
+  the source body after bind has **no effect at all** on a Mode B fit.
+- **No output of this add-on may ever be an input to it.** Bind reads the
+  garment's (and source body's) evaluated mesh; if either object's
+  `Fitted` shape key (this add-on's own bake — see section 3 step 4) is
+  present and active, that read must not include its contribution.
+  `operators/op_bind.py` enforces this by temporarily muting the `Fitted`
+  key block around the bind-time evaluated-mesh read and restoring it
+  after, deliberately leaving garment-side *modifiers* (and every other
+  shape key) untouched — only this add-on's own bake is excluded.
+- **Auto-detect refuses rather than guesses with no Target Body
+  declared.** `detect_bind_mode` raises rather than defaulting to Mode A
+  when Target Body isn't set yet — there is nothing to compare topology
+  against, so guessing Mode A here is exactly what let a mismatched Mode
+  A bind through silently (see section 7 Part C). A forced Mode A/B
+  override still bypasses this function entirely, per its own escape
+  hatch below.
+- **Schema version is enforced, not just recorded.** `SCHEMA_VERSION` is
+  2. A v1 binding (predates the frozen Mode B anchor and the Mode A
+  source vertex count) is refused at fit time with a clear "re-bind"
+  message (`storage.BindingVersionError`, a `ValueError` subclass) rather
+  than being silently misread or falling back to degraded v1 behavior.
 
 ## 3. Fit pipeline (applied per target body)
 
@@ -309,27 +353,129 @@ passes instead of being rebuilt redundantly.
   off-body (flat pattern pieces matched to the body via UV
   parameterization rather than 3D proximity) are not supported by either
   Mode A or B. Noted as a plausible future mode, not scoped now.
-- **Topology-mismatch misdetection.** Auto-detection of Mode A vs. B
-  relies on vertex count/order matching; two unrelated meshes that
-  happen to share a vertex count could be misclassified as Mode A. The
-  bind-mode override parameter exists specifically as the escape hatch,
-  but the default heuristic itself is a known soft spot.
-- **Mode B re-derives its anchor from the source body's live mesh, not a
-  bind-time snapshot.** `project_mode_b` in `core/solver.py` reconstructs
-  the bind-time correspondence point from the source body's *current*
-  mesh via the stored `triangle_index`/barycentric weights, rather than
-  from a cached bind-time position. If the source body is edited or
-  reshaped after bind — a different situation from the source body being
-  missing/renamed, which already raises a clear error — the fit silently
-  reprojects onto the altered geometry with no warning that the binding
-  is stale. This is a separate failure mode from the correspondence-math
-  degradation described above: the geometry query itself stays valid,
-  but it's answering a question the user no longer thinks they're
-  asking. It doesn't block Smoothing or the Pin-UI work, but it should be
-  fixed before Batch fitting is trusted for real production use — Batch
-  runs unattended at scale and is the workflow least likely to have
-  someone around to notice a quietly-wrong fit. Tracked as Backlog card
-  `089ab86f-4247-42c4-9652-9d30de33fbdf`.
+- **Topology-mismatch misdetection (partially addressed — see the
+  no-Target-Body-set case below, still a soft spot otherwise).**
+  Auto-detection of Mode A vs. B relies on vertex count/order matching;
+  two unrelated meshes that happen to share a vertex count, WITH a Target
+  Body actually declared, could still be misclassified as Mode A. The
+  bind-mode override parameter exists specifically as the escape hatch
+  for this case, and it remains a known soft spot. The related but
+  distinct failure — no Target Body declared at all — is fixed below
+  (Part C).
+- **Bind-time reference geometry is now frozen — fixes 089ab86f, 1f8e8594,
+  and a third, previously uncarded member of the same family (bump to
+  binding schema v2).** These three shared one root cause: reference
+  geometry the design assumes is frozen at bind time was actually read
+  live, with no detection. `project_mode_a` (per section 3) already never
+  touches the source body at fit time — it applies frozen per-vertex
+  offsets against the target — so Mode A was always correct here; Mode B
+  and the auto-detect heuristic were the outliers, brought in line with
+  Mode A's existing design rather than inventing a new principle.
+
+  - **Part A — Mode B's anchor is frozen at bind time (closes
+    089ab86f-4247-42c4-9652-9d30de33fbdf).** Previously,
+    `project_mode_b` in `core/solver.py` reconstructed the bind-time
+    correspondence point from the source body's *current* mesh via the
+    stored `triangle_index`/barycentric weights on every fit — a
+    different situation from the source body being missing/renamed
+    (which already raised a clear error): if the source body was edited
+    or reshaped after bind, the fit silently reprojected onto the
+    altered geometry with no warning that the binding was stale. Fixed
+    by storing the bind-time anchor directly, in the **source body's own
+    local object space** (`storage.ATTR_SOURCE_ANCHOR_LOCAL`, a
+    `FLOAT_VECTOR`/`POINT` mesh attribute), plus the source body's
+    `matrix_world` at that same bind-time moment
+    (`storage.PROP_SOURCE_BIND_MATRIX`, an object-level property).
+    `project_mode_b` now computes `world_anchor = source_bind_matrix @
+    source_anchor_local[i]` and finds the nearest point to that on the
+    TARGET body's BVH — no source-mesh read, no source-body object
+    lookup, at fit time at all. This deletes structure rather than
+    adding it: `_resolve_source_body` and its "source body missing"
+    error path are gone from `core/solver.py` entirely (a renamed or
+    deleted source body stops being a failure mode too, not just an
+    edited one), Mode B fitting no longer does an extra `to_mesh()` +
+    triangulation of the source body per fit (i.e. per target in a batch
+    run), and `project_mode_b` is measurably smaller than before.
+    `triangle_index`/`barycentric` are still computed and stored at bind
+    time, but are diagnostics only from here on — they are never read at
+    fit time, since indices into the source body's own triangulation
+    have no meaning against a different (target) body's triangle list
+    even before this fix, and now the anchor itself no longer needs them
+    reconstructed at all.
+  - **Part B — no output of this add-on may ever be an input to it
+    (closes 1f8e8594).** Verified empirically under Blender 5.2.1 on
+    real assets (23,153-vert avatar body, 2,087-vert bodysuit):
+    bind → fit → bind again silently changed 1,862 of 2,087 stored
+    `sculpt_tool_bind_normal_offset` values, max delta 0.0332, mean
+    0.0032 — against a legitimate fit displacement of max 0.0357 in the
+    same run, so one accidental re-bind injected error of the same order
+    as the effect being modeled, compounding per cycle, with the
+    operator reporting `FINISHED` and no warning. Root cause: binding
+    reads the garment's (Mode A and B alike) and, for Mode B, the source
+    body's evaluated mesh, and that evaluated mesh includes the `Fitted`
+    shape key's current contribution whenever one is present and active
+    — so re-binding after fitting quietly took this add-on's own prior
+    output as its "original, authored" input. Fixed in
+    `operators/op_bind.py` (not `core/`, since it needs
+    `context.view_layer.update()` to make the depsgraph catch up with a
+    mid-`execute()` mute/unmute, a Blender-context concern `core/`
+    deliberately stays free of): `_bind_time_evaluation` temporarily
+    mutes the `Fitted` key block — by name, `storage.
+    FITTED_SHAPE_KEY_NAME` — on the garment (and the source body, for
+    the same reason, less commonly triggered) around the bind-time
+    evaluated-mesh read, restoring it after even if the read raises.
+    Garment-side *modifiers*, and every other shape key, are left
+    untouched — this deliberately excludes only the add-on's own bake,
+    per the stated rule. Of the three directions the original card
+    considered, this is the middle one: "refuse with an error" would
+    punish the expected iterate-on-fit workflow (re-binding after fit is
+    a normal thing to want to do — e.g. to update Mode B's diagnostic
+    triangle/barycentric fields against a since-changed *source* mesh),
+    and "warn only" would leave a silent wrong result reachable.
+    Regression coverage: bind → fit → bind now produces bit-identical
+    stored bind attributes to the first bind (`tests/
+    test_binding_freeze.py`).
+  - **Part C — the Mode A no-Target-Body-set trap (a third member of
+    the same family, not previously carded).** `detect_bind_mode`
+    returned Mode A whenever `target_body_obj is None` (nothing to
+    compare topology against), and `project_mode_a` only guarded
+    individual `body_index >= target_vertex_count` — an out-of-range
+    check that stays silent whenever the eventual target body has the
+    SAME OR MORE vertices than the source body did, which is exactly the
+    common case. Verified under 5.2.1: binding with Target Body unset
+    chose Mode A, and fitting that binding against a 91,691-vert
+    cross-topology target (source was 23,153) returned `FINISHED` with
+    no error or warning, diverging from the correct Mode B answer by
+    max 0.0415 / mean 0.0052 — LARGER than the entire body deformation
+    being modeled (max 0.0288). The panel layout actively teaches this
+    order: Source Body sits under "Binding", Target Body under "Fit",
+    below it. Fixed two ways together: `bind_mode_a` now records the
+    source body's evaluated vertex count at bind time
+    (`storage.PROP_SOURCE_VERTEX_COUNT`), and `project_mode_a` refuses
+    outright, before touching any per-vertex index, if the target body's
+    vertex count doesn't match it (the old per-index guard remains as
+    defense in depth for anything that slips past); and
+    `detect_bind_mode` now raises rather than defaulting to Mode A when
+    no Target Body is declared, caught by `operators/op_bind.py` and
+    reported as a normal bind error. A forced Mode A/B override still
+    bypasses `detect_bind_mode` entirely, per its own escape hatch, and
+    is unaffected.
+  - **Schema bump.** All three parts share `storage.py` and one schema
+    version bump: `SCHEMA_VERSION` is now 2. A v1 binding is refused at
+    fit time with a clear message (`storage.BindingVersionError`, a
+    `ValueError` subclass — caught by the same `except ValueError` every
+    fit-time caller already had) rather than silently misread (a v1 Mode
+    B binding has neither of Part A's new fields) or falling back to the
+    pre-fix v1 behavior.
+  - **Tests:** `tests/test_binding_freeze.py` covers all four acceptance
+    criteria directly — editing the source body after bind doesn't
+    change a Mode B fit; deleting/renaming the source body after bind no
+    longer breaks fit at all; bind → fit → bind produces bit-identical
+    stored bind attributes; binding with no Target Body set refuses
+    clearly; a vertex-count-mismatched Mode A fit refuses clearly — plus
+    the v1-schema-refusal case. `tests/test_pipeline.py`'s existing Mode
+    B coverage (`ModeBFitOnceTest`) continues to pass unchanged against
+    the new storage layout.
 - **Collision resolution's push-out direction in concave regions — fixed**
   (card `1e252575-2b86-4ba5-89f7-bcf0ae9685ba`, the deferred half of card
   `c9ff95a5-6269-4c82-8789-08113a9dc9d3` that was explicitly deprioritized

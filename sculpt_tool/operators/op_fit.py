@@ -24,7 +24,12 @@ import bpy
 
 from ..core import pipeline, storage
 
-SHAPE_KEY_NAME = "Fitted"
+# The single source of truth for this name is core.storage
+# (FITTED_SHAPE_KEY_NAME) -- operators/op_bind.py also needs it, to mute
+# this exact key block around a bind-time evaluated-mesh read (Part B,
+# bind-time-freeze card: "no output of this add-on may ever be an input
+# to it"), so it isn't a private constant of this module any more.
+SHAPE_KEY_NAME = storage.FITTED_SHAPE_KEY_NAME
 
 
 class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
