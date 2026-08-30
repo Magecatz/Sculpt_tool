@@ -41,18 +41,27 @@ authored values that the residual plateaus instead of compounding as
 constraint solver.
 
 Pin weighting is applied ONCE PER OUTER ITERATION, at the ``relax()``
-level, rather than woven into the Laplacian/edge-length math itself:
-each outer iteration first computes what the Laplacian step + all edge-
-length sub-sweeps would produce if NO vertex were pinned at all (an
-entirely unpinned "fully solved" candidate, using the exact same
-:func:`_laplacian_step`/:func:`_edge_length_step` internals, called with
-an all-``0.0`` pin array), then blends each vertex between its own
-pre-iteration position and that candidate by its own ``(1 - pin_weight)``
-— a direct, literal implementation of ARCHITECTURE.md section 6's
-"blends a vertex between fully solved and rigid, unchanged" language.
-See :func:`relax` for why this replaced an earlier per-edge weighting
+level, rather than woven into the Laplacian step's own math: each outer
+iteration first computes a "candidate" position for every vertex via
+:func:`_laplacian_step` (called with an all-``0.0`` pin array, so the
+Laplacian averaging itself never treats any vertex as pinned) followed by
+:func:`_edge_length_step`'s internal sub-sweeps (called with the REAL
+per-vertex pin-weight array — see the "candidate is not fully unpinned"
+note below), then blends each vertex between its own pre-iteration
+position and that candidate by its own ``(1 - pin_weight)`` — a direct,
+literal implementation of ARCHITECTURE.md section 6's "blends a vertex
+between fully solved and rigid, unchanged" language. See :func:`relax`
+for why this outer-iteration blend replaced an earlier per-edge weighting
 scheme that turned out not to produce a linear aggregate blend (bug card
-1638a2d4-45d5-4264-9bc0-4e0ac339936b).
+1638a2d4-45d5-4264-9bc0-4e0ac339936b), and for why :func:`_edge_length_step`
+gets the real pin array rather than an all-``0.0`` one too (bug card
+8432ee45-20a9-47da-be6a-53e3beee39e6). TWO "dual-trajectory" structural
+redesigns were also tried on card 8432ee45, in an attempt to converge
+further than this single-candidate design does across a wider set of
+topologies — both measured WORSE than what's shipped here (one broke a
+previously-guaranteed monotonicity invariant outright, the other
+increased worst-case overshoot several-fold) and were reverted; see
+:func:`relax`'s "known residual" note for the concrete numbers.
 
 Pure logic operating on mesh data (testable outside the UI), matching
 ``core/solver.py``/``core/collision.py``'s convention: no Blender-
@@ -243,15 +252,43 @@ def _edge_length_step(positions, original_edges, pin_weights):
     to compound (see :data:`_EDGE_CORRECTION_SUBSTEPS`).
 
     ``pin_weights`` is accepted and honored here (mass-weighted split by
-    each endpoint's own ``(1 - pin_weight)``), but :func:`relax` always
-    calls this with an all-``0.0`` array now — pin weighting moved to the
-    outer-iteration blend in :func:`relax` (bug card
-    1638a2d4-45d5-4264-9bc0-4e0ac339936b: the mass-weighted split here
-    made a vertex's absorbed share of each edge's correction depend on
-    its NEIGHBOR's pin weight as much as its own, which did not produce a
-    linear aggregate blend — see :func:`relax` for what replaced it).
+    each endpoint's own ``(1 - pin_weight)``). :func:`relax` used to
+    always call this with an all-``0.0`` array (bug card
+    1638a2d4-45d5-4264-9bc0-4e0ac339936b: honoring the real per-vertex
+    pin array HERE, at the per-edge level, made a vertex's absorbed share
+    of each edge's correction depend on its NEIGHBOR's pin weight as much
+    as its own, which did not produce a linear aggregate blend across
+    outer iterations — see :func:`relax` for the fix that moved the
+    actual pin *blend* out to the outer iteration instead).
+
+    :func:`relax` now calls this with the real per-vertex pin array again
+    (bug card 8432ee45-20a9-47da-be6a-53e3beee39e6) — this is NOT a
+    revert of 1638a2d4's fix: the outer-iteration blend it introduced is
+    unchanged and still the only place a vertex's own displacement gets
+    scaled by its own ``(1 - pin_weight)``. What changed is narrower: this
+    function's internal mass-weighted split (which endpoint absorbs how
+    much of a given edge's length correction) now reflects each
+    endpoint's real resistance to movement instead of pretending every
+    vertex is equally free. Without that, a lightly-pinned vertex's
+    "fully solved" candidate (see :func:`relax`) could assume more
+    elasticity in a more-pinned neighbor than that neighbor would
+    actually exhibit once ITS OWN outer-iteration blend was applied —
+    the confirmed root cause of a graded pin region near a mesh boundary
+    occasionally moving a partially-pinned vertex more than the most-
+    displaced unpinned one (see :func:`relax`'s "known residual" note and
+    ``tests/test_smoothing.py::GradedBoundaryAdversarialSweepTest``).
     Kept pin-aware rather than hard-coded to "no pins" so this stays a
     correct, reusable building block on its own.
+
+    Two "dual-trajectory" structural redesigns were prototyped on the
+    same card, in an attempt to converge further than this real-pin-array
+    approach does across a wider set of topologies (both kept this
+    function's own logic unchanged, but changed how/whether it gets
+    called with a persistent, never-blended ``free`` trajectory instead
+    of a fresh per-iteration candidate). Both measured WORSE than what's
+    shipped here on a widened cross-topology sweep and were reverted —
+    see :func:`relax`'s "known residual" note for the concrete numbers
+    and root-cause analysis of each.
     """
     result = list(positions)
     for _ in range(_EDGE_CORRECTION_SUBSTEPS):
@@ -291,18 +328,30 @@ def relax(garment_obj, positions, pin_weights=None, iterations=1):
     all-``0.0`` (nothing pinned) list is used.
 
     Each outer iteration: run one damped Laplacian step (see
-    :func:`_laplacian_step`) followed by several internal edge-length
-    correction sub-sweeps (see :func:`_edge_length_step`) with NO vertex
-    treated as pinned, producing an entirely unpinned "fully solved"
-    candidate position for every vertex; then blend each vertex between
-    its own pre-iteration position and that candidate by its own
-    ``(1 - pin_weight)`` (``new = old * pin + candidate * (1 - pin)``).
-    A vertex at ``pin_weight == 1.0`` is therefore blended entirely back
-    to its own pre-iteration position every outer iteration — it comes
-    out of ``relax()`` bit-for-bit identical to how it went in, regardless
-    of ``iterations``. A vertex at ``pin_weight == 0.0`` gets exactly the
-    candidate position (identical to today's zero-pin behavior, since the
-    candidate itself is computed by the same zero-pin code path).
+    :func:`_laplacian_step`, called with an all-``0.0`` pin array — the
+    Laplacian averaging itself never treats any vertex as pinned) followed
+    by several internal edge-length correction sub-sweeps (see
+    :func:`_edge_length_step`, called with the REAL per-vertex pin
+    array — see that function's docstring and the "known residual" note
+    below for why), producing a "candidate" position for every vertex;
+    then blend each vertex between its own pre-iteration position and
+    that candidate by its own ``(1 - pin_weight)``
+    (``new = old * pin + candidate * (1 - pin)``). A vertex at
+    ``pin_weight == 1.0`` is therefore blended entirely back to its own
+    pre-iteration position every outer iteration — it comes out of
+    ``relax()`` bit-for-bit identical to how it went in, regardless of
+    ``iterations`` (the edge-length step still computes a candidate
+    position for it, but the outer blend discards that candidate entirely
+    at pin_weight 1.0, so what the edge-length step did with it is moot).
+    A vertex at ``pin_weight == 0.0`` gets exactly the candidate position;
+    if EVERY vertex is at ``pin_weight == 0.0`` this is bit-for-bit
+    identical to the pre-1638a2d4 zero-pin code path (the edge-length
+    step's mass-weighted split degenerates to the old 50/50 split when
+    every ``free_x`` is 1.0), but with any nonzero pin weight present
+    elsewhere in the mesh, a nominally ``0.0``-pin vertex's candidate can
+    still differ slightly from that path, because its neighbors' edge
+    corrections are now split by THEIR real pin weights too, not just its
+    own.
 
     This blend is applied ONCE PER OUTER ITERATION rather than woven into
     the Laplacian/edge-length math itself (bug card
@@ -319,38 +368,100 @@ def relax(garment_obj, positions, pin_weights=None, iterations=1):
     ARCHITECTURE.md section 6 ("blends a vertex between fully solved and
     rigid, unchanged") and measures much closer to linear in practice:
     on an isolated pinned vertex, aggregate displacement at pin_weight
-    0.25/0.5/0.75 measured ~0.70-0.91x / ~0.44-0.80x / ~0.21-0.60x of an
-    otherwise-identical unpinned vertex's displacement (range across 1-10
-    outer iterations; exactly linear at 1 iteration, drifting further
-    from exact as outer iterations and inter-vertex coupling increase,
-    but always monotonic and bounded by the unpinned baseline in every
-    isolated-vertex and uniform-band configuration tested). A continuous
-    pinned band (e.g. a realistic ``Pin_Hem`` selection, where every
-    pinned vertex's neighbors are also pinned) drifts somewhat further
-    from exact linearity at higher iteration counts than an isolated
-    pinned vertex does, since neighboring pinned vertices' unpinned
-    "candidate" positions reinforce each other's advancement iteration
-    over iteration — still monotonic and bounded by the unpinned
-    baseline in every uniform-band configuration tested, just a softer
-    blend than a single isolated pin at the same weight. Not a
-    regression against this fix's own goal (which was fixing the
-    0.76x-0.96x near-binary plateau, not guaranteeing exact linearity
-    under every topology), but worth knowing when reasoning about a
-    specific garment's pinned-region behavior.
+    0.25/0.5/0.75 was measured (before bug card
+    8432ee45-20a9-47da-be6a-53e3beee39e6's change to
+    :func:`_edge_length_step`, below) at ~0.70-0.91x / ~0.44-0.80x /
+    ~0.21-0.60x of an otherwise-identical unpinned vertex's displacement
+    (range across 1-10 outer iterations; exactly linear at 1 iteration,
+    drifting further from exact as outer iterations and inter-vertex
+    coupling increase, but always monotonic and bounded by the unpinned
+    baseline in every isolated-vertex and uniform-band configuration
+    tested). A continuous pinned band (e.g. a realistic ``Pin_Hem``
+    selection, where every pinned vertex's neighbors are also pinned)
+    drifted somewhat further from exact linearity at higher iteration
+    counts than an isolated pinned vertex did, for the same reason.
+    ``tests/test_smoothing.py::PinBlendMonotonicityTest`` (still green,
+    including through both dual-trajectory prototypes described below —
+    it was the test that CAUGHT one of them regressing) re-verifies the
+    qualitative claim that matters most for correctness: an isolated
+    pinned vertex's displacement stays monotonic in pin weight and
+    bounded by the unpinned baseline.
 
-    KNOWN RESIDUAL, not bounded in every topology: a *graded* pin region
+    KNOWN RESIDUAL, reduced but not eliminated: a *graded* pin region
     (neighboring vertices at different pin weights) sitting near the
     mesh's own free boundary, combined with vertex-position noise, can
-    produce a partially-pinned vertex that moves MORE than the most-
-    displaced unpinned vertex in the same run — measured up to ~46%
-    overshoot in synthetic testing, appearing in roughly 3-4% of such
-    boundary+noise configurations (never in noise-free or interior-only
-    ones). This is not a contrived case: a weight feathering toward zero
-    at a garment's free edge is close to the literal definition of a
-    ``Pin_Hem``/``Pin_Cuff`` selection. See ARCHITECTURE.md section 7 for
-    the full writeup and measured comparison against pre-fix behavior on
-    the same adversarial scenario; tracked as Backlog card
-    ``8432ee45-20a9-47da-be6a-53e3beee39e6``.
+    still produce a partially-pinned vertex that moves MORE than the
+    most-displaced unpinned vertex in the same run. This is not a
+    contrived case: a weight feathering toward zero at a garment's free
+    edge is close to the literal definition of a ``Pin_Hem``/``Pin_Cuff``
+    selection. Root cause (bug card
+    8432ee45-20a9-47da-be6a-53e3beee39e6, following up on
+    1638a2d4-45d5-4264-9bc0-4e0ac339936b): each outer iteration's
+    "candidate" is computed from every vertex's own CURRENT,
+    already-partially-blended position, rather than from a truly
+    independent, fully-relaxed reference. Calling :func:`_edge_length_step`
+    with the real per-vertex pin array (shipped here) makes a lagging
+    neighbor's own resistance to movement visible to the correction split,
+    which substantially reduces the overshoot relative to the pre-fix,
+    always-all-``0.0`` version of that call (on a single fixed 7x7 grid, a
+    wider seed/grading-width/jitter sweep than the original report
+    measured ~1.61x worst-case / ~52% of configurations showing any
+    overshoot before this fix, versus ~1.19x worst-case / a clear minority
+    of configurations after it) — but does not eliminate it, and does not
+    hold up as well on other topologies (see the widened,
+    per-topology-ceiling ``tests/test_smoothing.py::
+    GradedBoundaryAdversarialSweepTest`` and ARCHITECTURE.md section 7 for
+    current, honestly-measured worst-case-ratio AND incidence figures
+    across a 7x7 flat grid, a 12x12 flat grid, and a cylindrical hem-ring).
+
+    TWO STRUCTURAL "DUAL-TRAJECTORY" REDESIGNS WERE PROTOTYPED AND
+    REJECTED on this same card, per an Architect consult, after a broader
+    cross-topology sweep found the fix above reduces overshoot MAGNITUDE
+    but not INCIDENCE outside the one topology it was originally checked
+    against. Both variants maintained a second ``free`` position
+    trajectory, persistent and never blended back toward the pin-weighted
+    ``current`` trajectory across outer iterations (unlike the shipped
+    design's ``candidate``, which is re-derived from ``current`` every
+    iteration), on the theory that a truly independent, never-lagging
+    reference would remove the coupling mechanism instead of just damping
+    its effect. Measured (same widened three-topology sweep as above,
+    7x7 grid / 12x12 grid / cylindrical hem-ring):
+
+    - **Fully pin-independent free trajectory** (``_laplacian_step`` AND
+      ``_edge_length_step`` both always called with an all-``0.0`` pin
+      array for ``free``, at every iteration): worst-case ratio 1.39x /
+      1.32x / 1.55x, with 65.6% / 32.3% / 72.2% of swept configurations
+      affected — worse on every topology than the shipped design, and by
+      a wide margin on two of three. Root cause: decoupling ``free``
+      from ``pin_weights`` entirely also threw away the real-pin-array
+      fix's own damping mechanism, so open-boundary vertices (which have
+      fewer Laplacian neighbors and therefore larger natural swing) could
+      drift further before being blended into ``current``.
+    - **Hybrid** (``free``'s ``_laplacian_step`` call left at all-``0.0``,
+      but its ``_edge_length_step`` call given the real per-vertex pin
+      array, same as the shipped design's candidate): worst-case ratio
+      6.75x / 5.94x / 3.67x, with 93.0% / 93.8% / 85.4% affected — far
+      worse than either the shipped design or the fully-decoupled
+      variant, and this variant also broke
+      ``PinBlendMonotonicityTest`` outright (pin_weight 0.5 displacing
+      MORE than both pin_weight 0.25 and the unpinned baseline). Root
+      cause: ``_edge_length_step``'s mass-weighted split gives a
+      near-fully-pinned vertex close to 0% of its own edge's correction,
+      but because ``free``'s Laplacian step never treats any vertex as
+      pinned, that same vertex still gets dragged toward its neighbors'
+      average every iteration with nothing left to pull it back — and
+      because ``free`` is never reset toward an anchor (unlike
+      ``current``, which the blend snaps back every iteration), this
+      drift compounds unboundedly over ``iterations`` instead of
+      plateauing.
+
+    Both numbers are worse than this card's shipped fix on every
+    topology tested, so per the Architect's stop condition, no further
+    structural redesign was attempted after the second prototype; this
+    residual is accepted and tracked as a documented limitation rather
+    than converged on further. See ARCHITECTURE.md section 7 for the full
+    writeup and Backlog card `e893bfdd-bedc-42dc-98c8-9150ed0b742e`
+    tracking future attempts.
 
     Returns a new list of the same length/order. ``iterations <= 0``
     returns ``positions`` unchanged (see module docstring for why
@@ -417,7 +528,7 @@ def relax_positions(positions, neighbors, original_edges, pin_weights=None, iter
     current = list(positions)
     for _ in range(iterations):
         candidate = _laplacian_step(current, neighbors, zero_pins)
-        candidate = _edge_length_step(candidate, original_edges, zero_pins)
+        candidate = _edge_length_step(candidate, original_edges, pin_weights)
         current = [
             current[i] * pin_weights[i] + candidate[i] * (1.0 - pin_weights[i])
             for i in range(vertex_count)
