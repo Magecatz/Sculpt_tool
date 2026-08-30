@@ -476,6 +476,29 @@ passes instead of being rebuilt redundantly.
     the v1-schema-refusal case. `tests/test_pipeline.py`'s existing Mode
     B coverage (`ModeBFitOnceTest`) continues to pass unchanged against
     the new storage layout.
+
+    **Coverage gap found and closed (Tester pass, same card).** Every
+    Part B case above bakes the contaminating `Fitted` key onto the
+    *garment* being re-bound; `_bind_time_evaluation` also mutes it on
+    the *source body* ("the same failure mode applies, less commonly, to
+    a source body that was itself fit as some other garment's target" —
+    see its own docstring), but no test exercised that branch — every
+    source body in the suite was a plain, never-fitted grid, so deleting
+    `source_body_obj` from the `_bind_time_evaluation` call entirely
+    would still have passed all 41 cases. `tests/
+    test_binding_freeze_source_body_mute.py` closes this: it manually
+    bakes a `Fitted` key onto a would-be source body (bypassing Fit
+    entirely, so it guards the general "any pre-existing `Fitted` key
+    block" case, not just Fit's own output shape), binds a garment
+    against it, and confirms the stored anchor reflects the source
+    body's Basis geometry — diverging by construction from what an
+    unmuted read of `core.binding.bind_mode_b` against the same
+    contaminated object would produce. Suite is 42/42 with this test
+    included. An Architect read of `operators/op_bind.py` independently
+    confirms `_bind_time_evaluation` is the sole bind-time evaluated-mesh
+    read path (the only call site of `core.binding.bind_mode_a`/
+    `bind_mode_b` in the add-on), so this was a real test-coverage gap on
+    already-correct code, not a latent bug the test happened to catch.
 - **Collision resolution's push-out direction in concave regions — fixed**
   (card `1e252575-2b86-4ba5-89f7-bcf0ae9685ba`, the deferred half of card
   `c9ff95a5-6269-4c82-8789-08113a9dc9d3` that was explicitly deprioritized
