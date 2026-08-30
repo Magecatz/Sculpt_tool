@@ -2,48 +2,27 @@
 
 Runs the full fit pipeline (ARCHITECTURE.md section 3, steps 1-4) against
 the active garment's declared Target Body (``obj.sculpt_tool.
-target_body``): ``core.solver.project_garment`` re-evaluates the stored
-binding (Mode A or B) against the target body's current geometry, then
-— when ``obj.sculpt_tool.use_collision_resolution`` is enabled (the
-default) — ``core.collision.resolve_collisions`` pushes any
-interpenetrating vertex back out to at least ``obj.sculpt_tool.
-collision_margin`` clearance, then — when ``obj.sculpt_tool.
-smoothing_iterations`` is greater than zero — ``core.smoothing.relax``
-runs that many pin-weighted relaxation passes to smooth noise left by
-the earlier steps without shrink-wrapping the garment toward the body
-(ARCHITECTURE.md section 1's anti-goal), then this operator writes the
-result into a ``Fitted`` Shape Key on the garment — created fresh the
-first time, overwritten in place on subsequent runs (never duplicated),
-per ARCHITECTURE.md section 4's non-destructive-bake rationale. Base
-mesh data is never touched.
+target_body``). The pipeline sequence itself — project, then (when
+``obj.sculpt_tool.use_collision_resolution``) collision resolution, then
+(when ``obj.sculpt_tool.smoothing_iterations > 0``) pin-weighted
+smoothing, then a second collision pass if both ran — now lives in
+``core.pipeline.fit_once`` (Bear PR Process card
+cd0d1569-36ad-4d79-a82b-6d1115a0bcda; see that module's docstring for the
+full step-by-step rationale, unchanged by the extraction). This operator
+is setup (resolve/validate the garment and target body, collect
+``FitParams`` from the object's settings) + ``fit_once`` + bake + report
+— it contains no geometry pipeline logic of its own.
 
-``smoothing_iterations == 0`` is a true no-op: this operator does not
-call into ``core.smoothing`` at all in that case (not even to build the
-adjacency/neighbor structure or look up ``Pin_*`` vertex groups), so
-output is bit-identical to the collision-resolution-only pipeline. With
-collision resolution also disabled, this reproduces the original
-(project + bake only) card's raw, possibly-interpenetrating output
-exactly.
-
-When both collision resolution and smoothing run, collision resolution
-also runs a SECOND time, after smoothing, on the smoothed result (fixed
-by card 1e252575-2b86-4ba5-89f7-bcf0ae9685ba, per an Architect consult:
-smoothing's Laplacian step has no idea the target body exists and can
-readily drag an already-cleared vertex back into it — the pre-smoothing
-collision pass alone left a measurable residual of interpenetrating
-vertices on real garments for exactly this reason). This reuses the same
-``projection.anchor_positions``/``anchor_normals`` from the original
-projection rather than recomputing them: the anchor is a property of the
-binding's correspondence to the target body, not of the garment's current
-position, so smoothing moving vertices around does not invalidate it.
-Skipped (same as the first pass) when collision resolution is disabled,
-and skipped entirely when ``smoothing_iterations == 0`` (nothing moved
-after the first collision pass, so there is nothing new to re-check).
+The bake: this operator writes ``fit_once``'s world-space output into a
+``Fitted`` Shape Key on the garment — created fresh the first time,
+overwritten in place on subsequent runs (never duplicated), per
+ARCHITECTURE.md section 4's non-destructive-bake rationale. Base mesh
+data is never touched.
 """
 
 import bpy
 
-from ..core import binding, collision, smoothing, solver, storage
+from ..core import pipeline, storage
 
 SHAPE_KEY_NAME = "Fitted"
 
@@ -87,55 +66,18 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
             )
             return {'CANCELLED'}
 
-        offset_scale = getattr(settings, "offset_scale", 1.0)
+        params = pipeline.FitParams(
+            offset_scale=getattr(settings, "offset_scale", 1.0),
+            use_collision_resolution=getattr(settings, "use_collision_resolution", True),
+            collision_margin=getattr(settings, "collision_margin", 0.01),
+            smoothing_iterations=getattr(settings, "smoothing_iterations", 0),
+        )
 
+        depsgraph = context.evaluated_depsgraph_get()
         try:
-            projection = solver.project_garment(garment_obj, target_body_obj, offset_scale)
-            fitted_world = projection.fitted_positions
-
-            use_collision_resolution = getattr(settings, "use_collision_resolution", True)
-            if use_collision_resolution:
-                collision_margin = getattr(settings, "collision_margin", 0.01)
-                target_positions, target_triangles = binding._world_space_triangles(
-                    target_body_obj
-                )
-                fitted_world = collision.resolve_collisions(
-                    fitted_world,
-                    projection.anchor_positions,
-                    projection.anchor_normals,
-                    target_positions,
-                    target_triangles,
-                    collision_margin,
-                )
-
-            smoothing_iterations = getattr(settings, "smoothing_iterations", 0)
-            if smoothing_iterations > 0:
-                pin_weights = smoothing.compute_pin_weights(garment_obj)
-                fitted_world = smoothing.relax(
-                    garment_obj,
-                    fitted_world,
-                    pin_weights,
-                    smoothing_iterations,
-                )
-
-                if use_collision_resolution:
-                    # Smoothing has no notion of the target body and can
-                    # push an already-cleared vertex back into it (see the
-                    # module docstring) -- re-run collision resolution on
-                    # the smoothed result. Same anchors as the first pass:
-                    # they describe the binding's correspondence to the
-                    # target body, not the garment's current position, so
-                    # smoothing moving vertices around doesn't invalidate
-                    # them. `target_positions`/`target_triangles`/
-                    # `collision_margin` are already computed above.
-                    fitted_world = collision.resolve_collisions(
-                        fitted_world,
-                        projection.anchor_positions,
-                        projection.anchor_normals,
-                        target_positions,
-                        target_triangles,
-                        collision_margin,
-                    )
+            fitted_world = pipeline.fit_once(
+                garment_obj, target_body_obj, params, depsgraph
+            )
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}

@@ -75,6 +75,8 @@ so that case does not even build the adjacency/neighbor structure or
 look up vertex groups.
 """
 
+from dataclasses import dataclass
+
 from mathutils import Vector
 
 PIN_GROUP_PREFIX = "Pin_"
@@ -156,6 +158,49 @@ def _original_world_edges(garment_obj):
         length = (positions[b] - positions[a]).length
         edges.append((a, b, length))
     return edges
+
+
+@dataclass
+class RelaxContext:
+    """A garment's per-vertex relax() invariants, hoisted out and built once.
+
+    ``_build_adjacency``, ``_original_world_edges``, and
+    ``compute_pin_weights`` all derive purely from ``garment_obj`` (its
+    topology, its base-mesh edge lengths, and its ``Pin_*`` vertex-group
+    weights) -- none of them depend on which target body a fit is running
+    against. :func:`relax` rebuilds all three from scratch on every call,
+    which is correct but wasteful across a batch run that fits the SAME
+    garment against many different target bodies in sequence (Bear PR
+    Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda). :meth:`build`
+    computes them once; ``core.pipeline.fit_once`` accepts an optional
+    pre-built context so a batch caller can build one before its
+    per-target loop and pass the SAME context into every ``fit_once``
+    call, instead of paying this cost per target.
+
+    This is also what makes :func:`relax_positions` -- the numerical core
+    -- unit-testable with synthetic ``neighbors``/``original_edges``/
+    ``pin_weights`` arrays with no ``bpy`` object involved at all, as it
+    already was before this card (see :func:`relax_positions`'s own
+    docstring); ``RelaxContext`` just names and bundles the three arrays
+    that feed it.
+    """
+
+    neighbors: list
+    original_edges: list
+    pin_weights: list
+
+    @classmethod
+    def build(cls, garment_obj):
+        """Compute ``neighbors``/``original_edges``/``pin_weights`` once
+        from ``garment_obj``'s current topology, base-mesh edge lengths,
+        and ``Pin_*`` vertex groups -- the exact same computation
+        :func:`relax` does inline on every call."""
+        mesh = garment_obj.data
+        return cls(
+            neighbors=_build_adjacency(mesh),
+            original_edges=_original_world_edges(garment_obj),
+            pin_weights=compute_pin_weights(garment_obj),
+        )
 
 
 def _laplacian_step(positions, neighbors, pin_weights):

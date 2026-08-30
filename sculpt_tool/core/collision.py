@@ -110,15 +110,24 @@ explicitly out of scope, matching the card's literal "any interpenetrating
 vertex" wording and keeping the pass from moving vertices it doesn't need
 to.
 
-The BVH is built once per call (not once per garment vertex, and not
-separately for the two tests), so a single ``resolve_collisions`` call
-stays cheap even at tens-of-thousands-of-body-vertex scale — see
-ARCHITECTURE.md section 7's performance risk note. Batch-scale
-optimization (vectorized NumPy bulk access across many target bodies) is
-explicitly out of scope for this card, per ARCHITECTURE.md section 8.
+``resolve_collisions`` takes a pre-built ``target_bvh`` (a
+``mathutils.bvhtree.BVHTree``) rather than raw target-body positions/
+triangles, and does not build one itself — the caller
+(``core.pipeline.fit_once``) builds it exactly once per fit via
+``core.geometry.TargetContext`` and reuses the SAME tree across both
+collision passes (the second one runs after smoothing, per
+``operators/op_fit.py``'s docstring) and Mode B's own projection step, so
+a single fit no longer triangulates/BVH-builds the target body multiple
+times over (Bear PR Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda —
+previously this function built its own BVH from ``target_positions``/
+``target_triangles`` on every call, on top of ``core.solver.
+project_mode_b``'s own separate build of the same target body for Mode B
+fits). This keeps a single call cheap even at tens-of-thousands-of-body-
+vertex scale — see ARCHITECTURE.md section 7's performance risk note.
+Batch-scale optimization beyond that (vectorized NumPy bulk access across
+many DIFFERENT target bodies) is explicitly out of scope for this card,
+per ARCHITECTURE.md section 8.
 """
-
-from mathutils.bvhtree import BVHTree
 
 # Minimum anchor-to-fitted travel distance worth testing for tunneling.
 # Below this, the vertex barely moved off its anchor at all, so there is
@@ -162,8 +171,7 @@ def resolve_collisions(
     fitted_positions,
     anchor_positions,
     anchor_normals,
-    target_positions,
-    target_triangles,
+    target_bvh,
     collision_margin,
 ):
     """Push any garment vertex found inside the target body back out.
@@ -177,15 +185,16 @@ def resolve_collisions(
     tunneling test described in the module docstring; all three lists
     must be the same length, in the same vertex-index order.
 
-    ``target_positions``/``target_triangles`` are the target body's
-    evaluated, world-space, triangulated surface --
-    ``core.binding._world_space_triangles(target_body_obj)``'s output.
-    This function takes plain geometry data rather than a Blender object
-    (the caller, ``operators/op_fit.py``, does the ``bpy``-facing
-    evaluation) so it is testable with synthetic data and has no ``bpy``
-    dependency of its own, matching ``_laplacian_step``/
-    ``_barycentric_weights``/``_triangle_frame``/``_local_frame``'s
-    convention elsewhere in ``core/``.
+    ``target_bvh`` is a pre-built ``mathutils.bvhtree.BVHTree`` over the
+    target body's evaluated, world-space, triangulated surface --
+    ``core.geometry.TargetContext.build(target_body_obj, depsgraph).bvh``.
+    This function takes a plain ``BVHTree`` (not a Blender object, and not
+    raw positions/triangles to build one from) so it is testable with a
+    synthetic BVH and has no ``bpy`` dependency of its own, matching
+    ``_laplacian_step``/``barycentric_weights``/``triangle_frame``/
+    ``local_frame``'s convention elsewhere in ``core/`` -- and so the SAME
+    tree, built once, is reused across every call in a single fit (see
+    module docstring).
 
     Returns a new list of the same length and order: a vertex found
     interpenetrating (by either the local nearest-point test or the
@@ -193,16 +202,8 @@ def resolve_collisions(
     relevant surface offset outward by ``collision_margin`` along that
     surface point's normal; every other vertex is passed through
     completely unchanged.
-
-    Raises ``ValueError`` if ``target_positions``/``target_triangles`` is
-    empty (mirrors ``core.solver.project_mode_b``'s handling of the same
-    situation on the caller side).
     """
-    if not target_positions or not target_triangles:
-        raise ValueError("Target body has no triangulatable faces.")
-
-    bvh = BVHTree.FromPolygons(target_positions, target_triangles)
-
+    bvh = target_bvh
     resolved = []
     for co, anchor, anchor_normal in zip(fitted_positions, anchor_positions, anchor_normals):
         hit_location, hit_normal, hit_tri_index, _hit_distance = bvh.find_nearest(co)

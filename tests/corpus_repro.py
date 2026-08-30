@@ -72,10 +72,9 @@ import common  # noqa: E402
 
 import bpy  # noqa: E402
 from mathutils import Vector  # noqa: E402
-from mathutils.bvhtree import BVHTree  # noqa: E402
 
 import sculpt_tool  # noqa: E402
-from sculpt_tool.core import binding, collision, solver  # noqa: E402
+from sculpt_tool.core import collision, geometry, solver  # noqa: E402
 
 BODY_FBX_NAME = "vrbase_Egirl_Heeled Foot.fbx"
 BODY_OBJECT_NAME = "BODY"
@@ -330,8 +329,9 @@ def main():
             key_blocks[key_name].value = 1.0
         common.update_scene()
 
-        target_positions, target_triangles = binding._world_space_triangles(target_body)
-        target_bvh = BVHTree.FromPolygons(target_positions, target_triangles)
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        target_ctx = geometry.TargetContext.build(target_body, depsgraph)
+        target_bvh = target_ctx.bvh
 
         rows = []
         for fbx_name, object_name, display_name, expected_verts in GARMENTS:
@@ -358,7 +358,7 @@ def main():
             if bind_result != {'FINISHED'}:
                 raise RuntimeError(f"bind failed for {display_name}: {bind_result}")
 
-            projection = solver.project_garment(garment, target_body, OFFSET_SCALE)
+            projection = solver.project_garment(garment, target_ctx, depsgraph, OFFSET_SCALE)
             raw_positions = projection.fitted_positions
 
             before_count = _count_penetrating(raw_positions, target_bvh)
@@ -376,8 +376,7 @@ def main():
                 raw_positions,
                 projection.anchor_positions,
                 projection.anchor_normals,
-                target_positions,
-                target_triangles,
+                target_bvh,
                 COLLISION_MARGIN,
             )
             new_after_count = _count_penetrating(new_resolved, target_bvh)

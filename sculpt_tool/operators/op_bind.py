@@ -11,6 +11,12 @@ vertex count, else Mode B (cross-topology, BVH nearest-surface
 projection) — while ``'MODE_A'``/``'MODE_B'`` force that choice
 regardless of what auto-detection would have picked, per section 6's
 escape hatch for topology-mismatch coincidences.
+
+``core.binding.bind_mode_a``/``bind_mode_b`` take a resolved depsgraph
+rather than resolving one internally (Bear PR Process card
+cd0d1569-36ad-4d79-a82b-6d1115a0bcda — see ``core/geometry.py``'s module
+docstring), so this operator resolves it once via ``context.
+evaluated_depsgraph_get()`` and passes it down.
 """
 
 import bpy
@@ -71,12 +77,14 @@ class SCULPTTOOL_OT_bind_garment(bpy.types.Operator):
         else:
             mode = binding.detect_bind_mode(source_body_obj, settings.target_body)
 
+        depsgraph = context.evaluated_depsgraph_get()
+
         if mode == binding.MODE_A:
-            result = binding.bind_mode_a(garment_obj, source_body_obj)
+            result = binding.bind_mode_a(garment_obj, source_body_obj, depsgraph)
             storage.write_mode_a_binding(garment_obj, source_body_obj, result)
             vertex_count = len(result.body_vertex_index)
         else:
-            result = binding.bind_mode_b(garment_obj, source_body_obj)
+            result = binding.bind_mode_b(garment_obj, source_body_obj, depsgraph)
             storage.write_mode_b_binding(garment_obj, source_body_obj, result)
             vertex_count = len(result.triangle_index)
 

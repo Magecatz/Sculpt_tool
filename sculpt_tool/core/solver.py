@@ -3,9 +3,9 @@
 Per ARCHITECTURE.md section 3, step 1: re-evaluate each garment vertex's
 stored binding against a target body's current geometry, producing a raw
 fitted world-space position per garment vertex. Step 4 (the Shape Key
-bake) is done by ``operators/op_fit.py`` using this module's output; this
-module is pure logic operating on mesh data (testable outside the UI),
-matching ``core/binding.py``'s convention.
+bake) is done by ``operators/op_fit.py`` (via ``core/pipeline.py``) using
+this module's output; this module is pure logic operating on mesh data
+(testable outside the UI), matching ``core/binding.py``'s convention.
 
 Mode A (same-topology): direct index lookup, but the local
 (normal, tangent, bitangent) frame is rebuilt from the TARGET body's
@@ -14,8 +14,8 @@ frame cached from bind time — so the fit follows however the target
 body has since moved or deformed (e.g. via its own shape keys). This is
 what makes Fit meaningfully different from just re-copying the bind-time
 offset, and mirrors ``core.binding.bind_mode_a``'s own frame
-construction (``binding._local_frame``), reused here so both are built
-the exact same deterministic way.
+construction (``core.geometry.local_frame``), reused here so both are
+built the exact same deterministic way.
 
 Mode B (cross-topology): resolved per an Architect consult on this card
 (Bear PR Process board, card 7601dd7f-8c5d-4484-96f7-4be9cfe6cef3).
@@ -34,7 +34,7 @@ they cannot be looked up directly against the target. Instead:
   3. Apply the stored ``normal_offset``/``tangent_offset_2d`` relative to
      the NEW local frame found on the target body at that hit point,
      built the same deterministic way bind time does
-     (``binding._triangle_frame``).
+     (``core.geometry.triangle_frame``).
 
 This requires the source body object to still exist in the scene
 (looked up by name via ``storage.PROP_SOURCE_BODY_NAME``) to serve as
@@ -46,8 +46,8 @@ bind time instead) rather than blocking this one.
 
 Both modes also compute, per garment vertex, the point on the TARGET
 body's surface the stored offset is actually applied from (Mode A:
-``target_positions[body_index]``; Mode B: the ``find_nearest`` hit on the
-target BVH) before adding the offset -- this "anchor" is returned
+``target_ctx.positions[body_index]``; Mode B: the ``find_nearest`` hit on
+the target BVH) before adding the offset -- this "anchor" is returned
 alongside the fitted position (see :class:`ProjectionResult`) rather than
 discarded, per an Architect consult on card
 ``c9ff95a5-6269-4c82-8789-08113a9dc9d3``: it's the one non-local
@@ -57,14 +57,25 @@ a garment vertex that has tunneled all the way through thin geometry --
 something no test of the fitted position in isolation can detect, since
 such a vertex is genuinely outside the body from its own local point of
 view.
+
+Both ``project_mode_a`` and ``project_mode_b`` take a pre-built
+``core.geometry.TargetContext`` (rather than a target body object) so the
+target body's evaluated geometry — and, for Mode B, its BVH — is
+evaluated/triangulated/built exactly once per fit and shared with
+``core.collision``'s two passes, instead of being rebuilt independently
+here (Bear PR Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda; see
+``core.geometry.TargetContext``'s docstring and
+``core.pipeline.fit_once``, the sole place that builds one). Mode B
+additionally takes ``depsgraph`` directly, since it still needs to
+evaluate the SOURCE body (a different object from the target, not part
+of ``TargetContext``) to reconstruct the bind-time anchor.
 """
 
 from dataclasses import dataclass
 
 import bpy
-from mathutils.bvhtree import BVHTree
 
-from . import binding, storage
+from . import geometry, storage
 
 
 @dataclass
@@ -106,20 +117,18 @@ def _resolve_source_body(binding_info):
     return obj
 
 
-def project_mode_a(garment_obj, target_body_obj, offset_scale=1.0):
-    """Re-evaluate a Mode A binding against ``target_body_obj``.
+def project_mode_a(garment_obj, target_ctx, offset_scale=1.0):
+    """Re-evaluate a Mode A binding against ``target_ctx``.
 
-    Returns a :class:`ProjectionResult`.
+    ``target_ctx`` is a :class:`core.geometry.TargetContext` built once
+    per fit (see module docstring). Returns a :class:`ProjectionResult`.
     """
     info = storage.read_mode_a_binding(garment_obj)
     if info is None:
         raise ValueError(f"'{garment_obj.name}' has no Mode A binding to fit.")
 
-    target_positions, target_normals = binding._world_space_positions_and_normals(
-        target_body_obj
-    )
-    if not target_positions:
-        raise ValueError(f"Target body '{target_body_obj.name}' has no vertices.")
+    target_positions = target_ctx.positions
+    target_normals = target_ctx.normals
 
     body_vertex_index = info["body_vertex_index"]
     normal_offset = info["normal_offset"]
@@ -134,12 +143,12 @@ def project_mode_a(garment_obj, target_body_obj, offset_scale=1.0):
         if body_index >= target_vertex_count:
             raise ValueError(
                 f"Mode A binding references target-body vertex {body_index}, "
-                f"but '{target_body_obj.name}' only has {target_vertex_count} "
+                f"but '{target_ctx.name}' only has {target_vertex_count} "
                 "vertices — Mode A requires the target body to share the "
                 "source body's topology."
             )
         body_co = target_positions[body_index]
-        normal, tangent, bitangent = binding._local_frame(target_normals[body_index])
+        normal, tangent, bitangent = geometry.local_frame(target_normals[body_index])
 
         offset_vec = (
             normal * normal_offset[i]
@@ -157,10 +166,13 @@ def project_mode_a(garment_obj, target_body_obj, offset_scale=1.0):
     )
 
 
-def project_mode_b(garment_obj, target_body_obj, offset_scale=1.0):
-    """Re-evaluate a Mode B binding against ``target_body_obj``.
+def project_mode_b(garment_obj, target_ctx, depsgraph, offset_scale=1.0):
+    """Re-evaluate a Mode B binding against ``target_ctx``.
 
-    See the module docstring for the algorithm. Returns a
+    See the module docstring for the algorithm. ``target_ctx`` is a
+    :class:`core.geometry.TargetContext` built once per fit; ``depsgraph``
+    is used to separately evaluate the SOURCE body (not part of
+    ``target_ctx``) to reconstruct the bind-time anchor. Returns a
     :class:`ProjectionResult`.
     """
     info = storage.read_mode_b_binding(garment_obj)
@@ -169,19 +181,17 @@ def project_mode_b(garment_obj, target_body_obj, offset_scale=1.0):
 
     source_body_obj = _resolve_source_body(info)
 
-    source_positions, source_triangles = binding._world_space_triangles(source_body_obj)
+    source_positions, source_triangles = geometry.world_space_triangles(
+        source_body_obj, depsgraph
+    )
     if not source_positions or not source_triangles:
         raise ValueError(
             f"Source body '{source_body_obj.name}' has no triangulatable faces."
         )
 
-    target_positions, target_triangles = binding._world_space_triangles(target_body_obj)
-    if not target_positions or not target_triangles:
-        raise ValueError(
-            f"Target body '{target_body_obj.name}' has no triangulatable faces."
-        )
-
-    target_bvh = BVHTree.FromPolygons(target_positions, target_triangles)
+    target_positions = target_ctx.positions
+    target_triangles = target_ctx.triangles
+    target_bvh = target_ctx.bvh
 
     triangle_index = info["triangle_index"]
     barycentric = info["barycentric"]
@@ -215,7 +225,7 @@ def project_mode_b(garment_obj, target_body_obj, offset_scale=1.0):
         )
         if hit_tri_index is None:
             raise ValueError(
-                f"No nearest surface point found on '{target_body_obj.name}' "
+                f"No nearest surface point found on '{target_ctx.name}' "
                 "for a Mode B garment vertex."
             )
 
@@ -225,7 +235,7 @@ def project_mode_b(garment_obj, target_body_obj, offset_scale=1.0):
             target_positions[tri2[1]],
             target_positions[tri2[2]],
         )
-        normal2, tangent2, bitangent2 = binding._triangle_frame(a2, b2, c2)
+        normal2, tangent2, bitangent2 = geometry.triangle_frame(a2, b2, c2)
 
         tangent_u, tangent_v = tangent_offset_2d[i]
         offset_vec = (
@@ -244,21 +254,24 @@ def project_mode_b(garment_obj, target_body_obj, offset_scale=1.0):
     )
 
 
-def project_garment(garment_obj, target_body_obj, offset_scale=1.0):
-    """Re-evaluate ``garment_obj``'s stored binding against ``target_body_obj``.
+def project_garment(garment_obj, target_ctx, depsgraph, offset_scale=1.0):
+    """Re-evaluate ``garment_obj``'s stored binding against ``target_ctx``.
 
     Dispatches to :func:`project_mode_a` or :func:`project_mode_b` based
     on the garment's stored bind mode (``storage.PROP_BIND_MODE``).
-    Returns a :class:`ProjectionResult` — ready for
-    ``operators/op_fit.py`` to pass to ``core.collision.
-    resolve_collisions`` and to convert ``.fitted_positions`` to the
-    garment's local space for the Shape Key bake.
+    ``target_ctx`` is a :class:`core.geometry.TargetContext` built once
+    per fit (see module docstring); ``depsgraph`` is only used if
+    dispatching to Mode B (to evaluate the source body). Returns a
+    :class:`ProjectionResult` — ready for ``core.pipeline.fit_once`` to
+    pass to ``core.collision.resolve_collisions`` and, ultimately, for
+    ``operators/op_fit.py`` to convert to the garment's local space for
+    the Shape Key bake.
     """
     mode = garment_obj.get(storage.PROP_BIND_MODE)
     if mode == storage.MODE_A:
-        return project_mode_a(garment_obj, target_body_obj, offset_scale)
+        return project_mode_a(garment_obj, target_ctx, offset_scale)
     elif mode == storage.MODE_B:
-        return project_mode_b(garment_obj, target_body_obj, offset_scale)
+        return project_mode_b(garment_obj, target_ctx, depsgraph, offset_scale)
     else:
         raise ValueError(
             f"'{garment_obj.name}' is not bound (or has an unrecognized "

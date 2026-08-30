@@ -27,7 +27,10 @@ for path in (REPO_ROOT, TESTS_DIR):
 
 import common  # noqa: E402
 
-from sculpt_tool.core import binding, collision, smoothing  # noqa: E402
+import bpy  # noqa: E402
+from mathutils.bvhtree import BVHTree  # noqa: E402
+
+from sculpt_tool.core import collision, geometry, smoothing  # noqa: E402
 
 # ~33k vertices, matching the smoothing entry's own repro scale.
 GARMENT_SEGMENTS = 150
@@ -68,7 +71,9 @@ def main():
         "PerfBody", x_segments=BODY_X_SEGMENTS, y_segments=BODY_Y_SEGMENTS, size=4.0
     )
     body.location = (0.0, 0.0, -3.0)  # keep it clear of the garment tube
-    target_positions, target_triangles = binding._world_space_triangles(body)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    target_positions, target_triangles = geometry.world_space_triangles(body, depsgraph)
+    target_bvh = BVHTree.FromPolygons(target_positions, target_triangles)
     print(f"  {len(target_positions)} vertices, {len(target_triangles)} triangles.")
 
     # Anchors coincide with the fitted positions -- this benchmark is
@@ -82,8 +87,7 @@ def main():
         garment_positions,
         anchor_positions,
         anchor_normals,
-        target_positions,
-        target_triangles,
+        target_bvh,
         COLLISION_MARGIN,
     )
     collision_elapsed = time.perf_counter() - start
