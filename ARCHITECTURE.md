@@ -625,6 +625,48 @@ facing layer that wires user input to `core/`.
     numbers from the rejection above used a different, incompatible sweep
     methodology and should not be conflated with these.
 
+    **The 7x7 ceiling itself needed one more honesty bump (Reviewer pass
+    3 on this card, Architect-confirmed non-blocking).** The 1.19x/25.0%
+    figure above (and the 1.22x/30.0% test ceiling it was measured
+    against) came from sweeping `seeds=range(16)` only. An independent
+    Reviewer re-check found seed 203 on the identical 7x7 topology —
+    using `grading_width`/`jitter_amplitude`/`iterations` values already
+    inside the checked-in sweep's own sets, just a seed outside
+    `range(16)` — reproducibly measures **1.2350x**, exceeding that
+    ceiling. This is not a new failure mode or a topology the fix
+    doesn't generalize to (contrast the 12x12-grid finding that got the
+    first pass rejected, which was a wide structural blowup on an
+    entirely untested topology): it is the same topology, same fix, one
+    additional seed grazing a ceiling that was only ever "the worst of
+    16 seeds we happened to check," not a proven bound — exactly the
+    caveat the docstrings and this section already carried. Folding seed
+    203 into the checked-in sweep (`seeds=list(range(16)) + [203]`) and
+    re-measuring gives worst=1.2350x, incidence=27.7% (113/408); the 7x7
+    test's ceiling is now **1.26x / 33.0%**, still comfortably below
+    both rejected dual-trajectory prototypes' numbers (1.39x-6.75x,
+    32-94% incidence) documented below, so it remains a meaningful
+    regression guard rather than a rubber stamp. No code change, no
+    further redesign attempted — Architect-confirmed this is scope
+    creep to chase further given the real fix is already tracked as
+    Backlog card `e893bfdd-bedc-42dc-98c8-9150ed0b742e`.
+
+    **Separately, incidence roughly doubled overall on an independent
+    Reviewer sweep, even though worst-case magnitude improved.** Using
+    its own methodology (distinct from the checked-in test's per-topology
+    grid above, and not directly comparable to it — same caveat as the
+    ~1.28x/20-35x-incidence figures earlier in this section), a Reviewer
+    pass measured incidence going from ~16.67% pre-fix to ~31.11%
+    post-fix, while worst-case magnitude dropped from ~1.6441x to
+    ~1.4364x over the same comparison. This mirrors the finding that got
+    the first fix attempt on this card rejected: magnitude and incidence
+    are two different axes, and this fix trades one for the other rather
+    than eliminating either. Recorded here explicitly, not just implied
+    by the per-topology incidence figures above, so it doesn't read as
+    an oversight: this is a known, accepted tradeoff of the shipped
+    single-trajectory design (same root cause as the graded-boundary
+    residual itself — see above), not a discrepancy between this section
+    and the numbers above it.
+
     **Two "dual-trajectory" structural redesigns were prototyped on this
     same card (current pass) and rejected**, per an Architect consult,
     since tightening the fix above further looked like it needed a

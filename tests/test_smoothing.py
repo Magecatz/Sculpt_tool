@@ -301,20 +301,36 @@ class GradedBoundaryAdversarialSweepTest(unittest.TestCase):
         )
 
     def test_flat_grid_7x7_stays_under_ceiling(self):
-        # x_segments=6 -> 7 verts per row/column.
+        # x_segments=6 -> 7 verts per row/column. Seed 203 is appended
+        # on top of the original range(16) sweep because a Reviewer
+        # follow-up (post-Architect-approval pass on this card) found it
+        # reproducibly exceeds the *previous* ceiling (1.22x/30.0%,
+        # measured from range(16) alone) at 1.2350x/... using
+        # grading_width/jitter_amplitude/iterations values that were
+        # already inside the swept sets below -- i.e. the ceiling was
+        # only ever a "widest seed we happened to check" number, not a
+        # true bound, and seed 203 is a known adversarial point for this
+        # exact topology. Folding it into the checked-in sweep (rather
+        # than just bumping the ceiling blind) means this specific gap
+        # can't silently resurface.
         worst, incidence, affected, total = self._sweep(
             obj_factory=lambda: common.make_grid("Grid7", x_segments=6, y_segments=6, size=2.0),
             cols_or_segments=7,
-            seeds=range(16),
+            seeds=list(range(16)) + [203],
             grading_widths=(2, 3, 4, 5),
             jitter_amplitudes=(0.03, 0.05),
             iterations_list=(10, 15, 20),
         )
         self._assert_topology(
-            # Freshly measured on the shipped fix: worst=1.1935x,
-            # incidence=25.0% (96/384).
+            # Freshly measured on the shipped fix with seed 203 included:
+            # worst=1.2350x (seed=203, grading_width=2, jitter=0.05,
+            # iterations=10), incidence=27.7% (113/408). Ceiling widened
+            # from 1.22x/30.0% per Architect direction (Reviewer pass 3
+            # on this card) -- still comfortably below the rejected
+            # dual-trajectory prototypes' numbers (1.39x-6.75x, 32-94%
+            # incidence), so it stays a meaningful regression guard.
             "7x7 flat grid", worst, incidence, affected, total,
-            ratio_ceiling=1.22, incidence_ceiling=0.30,
+            ratio_ceiling=1.26, incidence_ceiling=0.33,
         )
 
     def test_flat_grid_12x12_stays_under_ceiling(self):
