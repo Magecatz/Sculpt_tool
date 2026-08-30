@@ -16,7 +16,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
 
-from sculpt_tool.core import binding  # noqa: E402
+import bpy  # noqa: E402
+
+from sculpt_tool.core import binding, geometry  # noqa: E402
 
 
 def _reconstruct_mode_b_position(body_obj, triangle_index, barycentric, normal_offset, tangent_offset_2d):
@@ -25,10 +27,11 @@ def _reconstruct_mode_b_position(body_obj, triangle_index, barycentric, normal_o
     ``body_obj`` is the same body the binding was computed against, per
     ``core.binding.bind_mode_b``'s docstring.
     """
-    body_positions, body_triangles = binding._world_space_triangles(body_obj)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    body_positions, body_triangles = geometry.world_space_triangles(body_obj, depsgraph)
     tri = body_triangles[triangle_index]
     a, b, c = body_positions[tri[0]], body_positions[tri[1]], body_positions[tri[2]]
-    normal, tangent, bitangent = binding._triangle_frame(a, b, c)
+    normal, tangent, bitangent = geometry.triangle_frame(a, b, c)
 
     u, v, w = barycentric
     hit_location = a * u + b * v + c * w
@@ -56,7 +59,8 @@ class ModeBReconstructRoundTripTest(unittest.TestCase):
 
         original_positions = common.world_positions(garment)
 
-        result = binding.bind_mode_b(garment, source_body)
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        result = binding.bind_mode_b(garment, source_body, depsgraph)
 
         worst = 0.0
         for i, original in enumerate(original_positions):

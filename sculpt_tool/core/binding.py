@@ -11,14 +11,25 @@ implemented. ``detect_bind_mode`` implements the auto-detection heuristic
 from ARCHITECTURE.md sections 2/6 (vertex-count match -> Mode A, else
 Mode B); ``operators/op_bind.py`` is what wires that (plus the
 user-facing override) to an actual bind call.
+
+The shared geometry primitives this module used to define privately
+(``_local_frame``, ``_triangle_frame``, ``_world_space_positions_and_
+normals``, ``_world_space_triangles``) now live in ``core/geometry.py`` as
+public functions — ``core/solver.py`` and ``operators/op_fit.py`` were
+both already reaching into this module's private API for them (Bear PR
+Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda), which is a sign they
+were never really binding.py-internal. ``bind_mode_a``/``bind_mode_b``
+now take a ``depsgraph`` parameter (instead of resolving Blender's
+current evaluated depsgraph internally) for the same reason
+``core/geometry.py``'s functions do — see that module's docstring.
 """
 
 from dataclasses import dataclass
 
-import bpy
-from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.kdtree import KDTree
+
+from . import geometry
 
 MODE_A = 'A'
 MODE_B = 'B'
@@ -49,53 +60,7 @@ class ModeBBindResult:
     tangent_offset_2d: list
 
 
-def _local_frame(normal):
-    """Build a deterministic orthonormal (normal, tangent, bitangent) frame.
-
-    The same construction is reused at fit time from the (possibly
-    shape-key-changed) body vertex's new normal, so the frame rotates
-    along with the body's deformation instead of needing its own stored
-    tangent — that's what makes a Mode A binding "reapply correctly when
-    the body's shape changes via shape keys" per ARCHITECTURE.md.
-
-    No UV dependency (per ARCHITECTURE.md section 2 / Risks): the
-    tangent is derived from an arbitrary but fixed reference axis, with
-    a fallback axis for the near-parallel case so the frame never
-    degenerates.
-    """
-    normal = normal.normalized()
-
-    reference = Vector((0.0, 0.0, 1.0))
-    if abs(normal.z) > 0.99:
-        reference = Vector((1.0, 0.0, 0.0))
-
-    tangent = reference - normal * normal.dot(reference)
-    if tangent.length_squared < 1e-12:
-        reference = Vector((0.0, 1.0, 0.0))
-        tangent = reference - normal * normal.dot(reference)
-    tangent.normalize()
-
-    bitangent = normal.cross(tangent)
-    return normal, tangent, bitangent
-
-
-def _world_space_positions_and_normals(obj):
-    """Evaluated (modifiers applied), world-space vertex positions/normals."""
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    eval_obj = obj.evaluated_get(depsgraph)
-    mesh = eval_obj.to_mesh()
-
-    matrix = obj.matrix_world
-    normal_matrix = matrix.inverted_safe().transposed().to_3x3()
-
-    positions = [matrix @ v.co for v in mesh.vertices]
-    normals = [(normal_matrix @ v.normal).normalized() for v in mesh.vertices]
-
-    eval_obj.to_mesh_clear()
-    return positions, normals
-
-
-def bind_mode_a(garment_obj, source_body_obj):
+def bind_mode_a(garment_obj, source_body_obj, depsgraph):
     """Compute a Mode A (same-topology) binding.
 
     For every garment vertex (evaluated, world space), finds the
@@ -104,10 +69,17 @@ def bind_mode_a(garment_obj, source_body_obj):
     as a normal/tangent/bitangent delta relative to that body vertex's
     local frame, plus the body vertex's index.
 
+    ``depsgraph`` is a resolved ``bpy.types.Depsgraph`` (the caller —
+    ``operators/op_bind.py`` — obtains it via ``context.
+    evaluated_depsgraph_get()``; see ``core/geometry.py``'s module
+    docstring for why this module doesn't resolve it itself).
+
     Returns a :class:`ModeABindResult` with one entry per garment
     vertex, in vertex-index order.
     """
-    body_positions, body_normals = _world_space_positions_and_normals(source_body_obj)
+    body_positions, body_normals = geometry.world_space_positions_and_normals(
+        source_body_obj, depsgraph
+    )
     if not body_positions:
         raise ValueError(f"Source body '{source_body_obj.name}' has no vertices.")
 
@@ -116,7 +88,9 @@ def bind_mode_a(garment_obj, source_body_obj):
         kd.insert(co, i)
     kd.balance()
 
-    garment_positions, _ = _world_space_positions_and_normals(garment_obj)
+    garment_positions, _ = geometry.world_space_positions_and_normals(
+        garment_obj, depsgraph
+    )
 
     body_vertex_index = []
     normal_offset = []
@@ -126,7 +100,7 @@ def bind_mode_a(garment_obj, source_body_obj):
     for garment_co in garment_positions:
         _, body_index, _ = kd.find(garment_co)
         body_co = body_positions[body_index]
-        normal, tangent, bitangent = _local_frame(body_normals[body_index])
+        normal, tangent, bitangent = geometry.local_frame(body_normals[body_index])
 
         delta = garment_co - body_co
         body_vertex_index.append(body_index)
@@ -142,90 +116,7 @@ def bind_mode_a(garment_obj, source_body_obj):
     )
 
 
-def _world_space_triangles(obj):
-    """Evaluated, world-space (vertex_positions, triangle_vertex_indices).
-
-    ``triangle_vertex_indices`` is a list of ``(a, b, c)`` index tuples
-    into ``vertex_positions``, taken from the mesh's triangulated
-    ``loop_triangles`` (built even for a quad/ngon mesh) so every entry
-    is an actual 3-vertex triangle suitable for barycentric coordinates.
-    The list's order/indexing matches what a BVH built via
-    ``BVHTree.FromPolygons(vertex_positions, triangle_vertex_indices)``
-    reports back as its nearest-hit "polygon" index — that's what makes
-    a stored ``triangle_index`` reproducible: recomputing
-    ``loop_triangles`` on the (possibly different) body at read time and
-    indexing into it the same way reconstructs the same triangle.
-    """
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    eval_obj = obj.evaluated_get(depsgraph)
-    mesh = eval_obj.to_mesh()
-    mesh.calc_loop_triangles()
-
-    matrix = obj.matrix_world
-    positions = [matrix @ v.co for v in mesh.vertices]
-    triangles = [tuple(lt.vertices) for lt in mesh.loop_triangles]
-
-    eval_obj.to_mesh_clear()
-    return positions, triangles
-
-
-def _triangle_frame(a, b, c):
-    """Deterministic orthonormal (normal, tangent, bitangent) frame for a triangle.
-
-    Derived purely from the triangle's own vertices (edge ``a->b`` as the
-    tangent axis, face normal via cross product) rather than an external
-    reference — the same construction can be reproduced at fit time from
-    just the (target-body) triangle's vertices, with no need to store a
-    tangent separately, mirroring how Mode A's ``_local_frame`` is
-    reproducible from just a body vertex normal.
-
-    Falls back to :func:`_local_frame`'s arbitrary-reference construction
-    for a degenerate (zero-area) triangle so this never raises/divides by
-    zero on garbage input.
-    """
-    edge_ab = b - a
-    edge_ac = c - a
-    normal = edge_ab.cross(edge_ac)
-
-    if normal.length_squared < 1e-12 or edge_ab.length_squared < 1e-12:
-        return _local_frame(Vector((0.0, 0.0, 1.0)))
-
-    normal.normalize()
-    tangent = edge_ab.normalized()
-    bitangent = normal.cross(tangent)
-    return normal, tangent, bitangent
-
-
-def _barycentric_weights(p, a, b, c):
-    """Barycentric weights ``(u, v, w)`` of point ``p`` w.r.t. triangle ``a, b, c``.
-
-    Standard area-ratio formula (assumes ``p`` lies in the triangle's
-    plane, which the BVH nearest-surface hit point always does — on
-    interior, edge, or vertex cases alike). ``p == u*a + v*b + w*c``, and
-    ``u + v + w == 1``. Falls back to pinning all weight on ``a`` for a
-    degenerate (zero-area) triangle rather than dividing by zero.
-    """
-    v0 = b - a
-    v1 = c - a
-    v2 = p - a
-
-    d00 = v0.dot(v0)
-    d01 = v0.dot(v1)
-    d11 = v1.dot(v1)
-    d20 = v2.dot(v0)
-    d21 = v2.dot(v1)
-
-    denom = d00 * d11 - d01 * d01
-    if abs(denom) < 1e-12:
-        return (1.0, 0.0, 0.0)
-
-    v = (d11 * d20 - d01 * d21) / denom
-    w = (d00 * d21 - d01 * d20) / denom
-    u = 1.0 - v - w
-    return (u, v, w)
-
-
-def bind_mode_b(garment_obj, source_body_obj):
+def bind_mode_b(garment_obj, source_body_obj, depsgraph):
     """Compute a Mode B (cross-topology) binding.
 
     For every garment vertex (evaluated, world space), uses
@@ -248,10 +139,15 @@ def bind_mode_b(garment_obj, source_body_obj):
     project_mode_b`` re-derives the fitted position against a *different*
     (target) body instead, per that module's docstring).
 
+    ``depsgraph`` is a resolved ``bpy.types.Depsgraph`` — see
+    :func:`bind_mode_a`.
+
     Returns a :class:`ModeBBindResult` with one entry per garment
     vertex, in vertex-index order.
     """
-    body_positions, body_triangles = _world_space_triangles(source_body_obj)
+    body_positions, body_triangles = geometry.world_space_triangles(
+        source_body_obj, depsgraph
+    )
     if not body_positions:
         raise ValueError(f"Source body '{source_body_obj.name}' has no vertices.")
     if not body_triangles:
@@ -261,7 +157,9 @@ def bind_mode_b(garment_obj, source_body_obj):
 
     bvh = BVHTree.FromPolygons(body_positions, body_triangles)
 
-    garment_positions, _ = _world_space_positions_and_normals(garment_obj)
+    garment_positions, _ = geometry.world_space_positions_and_normals(
+        garment_obj, depsgraph
+    )
 
     triangle_index = []
     barycentric = []
@@ -280,8 +178,8 @@ def bind_mode_b(garment_obj, source_body_obj):
 
         tri = body_triangles[hit_tri_index]
         a, b, c = body_positions[tri[0]], body_positions[tri[1]], body_positions[tri[2]]
-        normal, tangent, bitangent = _triangle_frame(a, b, c)
-        u, v, w = _barycentric_weights(hit_location, a, b, c)
+        normal, tangent, bitangent = geometry.triangle_frame(a, b, c)
+        u, v, w = geometry.barycentric_weights(hit_location, a, b, c)
 
         delta = garment_co - hit_location
         triangle_index.append(hit_tri_index)

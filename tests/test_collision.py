@@ -7,9 +7,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
 
+import bpy  # noqa: E402
 from mathutils import Vector  # noqa: E402
+from mathutils.bvhtree import BVHTree  # noqa: E402
 
-from sculpt_tool.core import binding, collision  # noqa: E402
+from sculpt_tool.core import collision, geometry  # noqa: E402
+
+
+def _build_bvh(obj):
+    """Evaluate ``obj`` and build a BVH over its triangulated surface --
+    the same single-tree-per-target-body shape ``core.geometry.
+    TargetContext.build`` produces in production, since ``collision.
+    resolve_collisions`` now takes a pre-built ``target_bvh`` instead of
+    raw positions/triangles (Bear PR Process card
+    cd0d1569-36ad-4d79-a82b-6d1115a0bcda)."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    positions, triangles = geometry.world_space_triangles(obj, depsgraph)
+    return BVHTree.FromPolygons(positions, triangles)
 
 
 class ThinSlabTunnelingTest(unittest.TestCase):
@@ -32,7 +46,7 @@ class ThinSlabTunnelingTest(unittest.TestCase):
         bmesh.ops.scale(bm, vec=(1.0, 1.0, 0.025), verts=bm.verts)
         slab = common.link_object("Slab", bm)
 
-        target_positions, target_triangles = binding._world_space_triangles(slab)
+        target_bvh = _build_bvh(slab)
 
         anchor = Vector((0.0, 0.0, 0.025))  # on the slab's near (top) surface
         anchor_normal = Vector((0.0, 0.0, 1.0))
@@ -45,8 +59,7 @@ class ThinSlabTunnelingTest(unittest.TestCase):
             [fitted],
             [anchor],
             [anchor_normal],
-            target_positions,
-            target_triangles,
+            target_bvh,
             collision_margin,
         )
 
@@ -71,7 +84,7 @@ class ThinSlabTunnelingTest(unittest.TestCase):
         bmesh.ops.scale(bm, vec=(1.0, 1.0, 0.025), verts=bm.verts)
         slab = common.link_object("Slab", bm)
 
-        target_positions, target_triangles = binding._world_space_triangles(slab)
+        target_bvh = _build_bvh(slab)
 
         anchor = Vector((0.0, 0.0, 0.025))
         anchor_normal = Vector((0.0, 0.0, 1.0))
@@ -81,8 +94,7 @@ class ThinSlabTunnelingTest(unittest.TestCase):
             [fitted],
             [anchor],
             [anchor_normal],
-            target_positions,
-            target_triangles,
+            target_bvh,
             0.01,
         )
 
@@ -133,7 +145,7 @@ class ConcavePushOutDirectionTest(unittest.TestCase):
         here straight up -- as if the anchor was measured before the body
         deformed into this fold) clears it in a single push."""
         valley = common.make_valley("Valley")
-        target_positions, target_triangles = binding._world_space_triangles(valley)
+        target_bvh = _build_bvh(valley)
 
         co = Vector((0.0002, 0.0, -0.0005))
         anchor = Vector((co.x, co.y, 1.0))
@@ -141,7 +153,7 @@ class ConcavePushOutDirectionTest(unittest.TestCase):
         collision_margin = 0.01
 
         resolved = collision.resolve_collisions(
-            [co], [anchor], [anchor_normal], target_positions, target_triangles, collision_margin,
+            [co], [anchor], [anchor_normal], target_bvh, collision_margin,
         )
 
         self.assertFalse(
@@ -160,7 +172,7 @@ class ConcavePushOutDirectionTest(unittest.TestCase):
         inside -- ``resolve_collisions`` must re-query and push again to
         finish the job)."""
         valley = common.make_valley("Valley")
-        target_positions, target_triangles = binding._world_space_triangles(valley)
+        target_bvh = _build_bvh(valley)
 
         co = Vector((-0.001, 0.0, 0.0001))
         anchor = Vector((co.x, co.y, 1.0))
@@ -168,7 +180,7 @@ class ConcavePushOutDirectionTest(unittest.TestCase):
         collision_margin = 0.001
 
         resolved = collision.resolve_collisions(
-            [co], [anchor], [anchor_normal], target_positions, target_triangles, collision_margin,
+            [co], [anchor], [anchor_normal], target_bvh, collision_margin,
         )
 
         self.assertFalse(
@@ -185,7 +197,7 @@ class ConcavePushOutDirectionTest(unittest.TestCase):
         own push-out -- rather than leaving the vertex at whatever the
         last unresolved attempt produced."""
         valley = common.make_valley("Valley")
-        target_positions, target_triangles = binding._world_space_triangles(valley)
+        target_bvh = _build_bvh(valley)
 
         co = Vector((-0.001, 0.0, 0.0001))
         anchor = Vector((co.x, co.y, 1.0))
@@ -193,7 +205,7 @@ class ConcavePushOutDirectionTest(unittest.TestCase):
         collision_margin = 0.02
 
         resolved = collision.resolve_collisions(
-            [co], [anchor], [anchor_normal], target_positions, target_triangles, collision_margin,
+            [co], [anchor], [anchor_normal], target_bvh, collision_margin,
         )
 
         expected = anchor + anchor_normal * collision_margin

@@ -169,16 +169,29 @@ sculpt_tool/
     op_batch.py             OT_batch_fit
     op_pin_groups.py        pin vertex-group helper operators
   core/
+    geometry.py             shared geometry primitives + TargetContext (target body's evaluated geometry/BVH, built once per fit)
     binding.py             Mode A + Mode B bind computation
     solver.py               project step: apply binding to a target body
     collision.py            BVH-based penetration test + push-out
-    smoothing.py            pin-weighted relaxation pass
+    smoothing.py            pin-weighted relaxation pass + RelaxContext (garment's adjacency/edge/pin-weight invariants, built once per garment)
+    pipeline.py             fit_once(garment, target, params, depsgraph) -> fitted positions -- the full project/collision/smooth sequence, reusable by both op_fit.py and (once it lands) op_batch.py
     storage.py               read/write binding data as mesh custom attributes
 ```
 
 Each `core/` module is pure logic operating on mesh data (testable
-outside the UI); `operators/` and `ui_panel.py` are the thin Blender-
-facing layer that wires user input to `core/`.
+outside the UI) and takes an already-resolved `depsgraph` parameter for
+any evaluated-mesh read rather than resolving Blender's own current
+context itself (Bear PR Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda
+— `operators/` and `ui_panel.py` are the thin Blender-facing layer that
+resolves that context and wires user input to `core/`). `geometry.py`
+also holds the handful of shared triangle/frame primitives that used to
+be private to `binding.py` but were already being reached into by
+`solver.py` and `operators/op_fit.py` — they're public functions there
+now, so no module outside `binding.py` needs a `binding._`-prefixed name.
+`core/pipeline.py::fit_once` is the single place a target body's
+evaluated geometry gets triangulated and BVH-built per fit (via
+`geometry.TargetContext`), shared across projection and both collision
+passes instead of being rebuilt redundantly.
 
 ## 6. Parameters exposed to the user
 
@@ -821,6 +834,23 @@ one `Fitted` shape key per target. It is a thin orchestration layer over
 the same `core/` modules the single-target `OT_fit_garment` uses — no
 separate batch-specific solver logic — so correctness fixes to the core
 pipeline apply to both paths automatically.
+
+The project/collision/smooth sequence itself now lives in
+`core/pipeline.py::fit_once(garment, target, params, depsgraph) -> fitted
+positions` (Bear PR Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda),
+extracted out of `operators/op_fit.py`'s `execute()` specifically so
+`OT_batch_fit` can call it once per target body in its own loop — bake +
+report per target is the only logic that needs to live in the batch
+operator itself, matching the "no separate batch-specific solver logic"
+requirement above literally rather than by convention. `core.smoothing.
+RelaxContext.build(garment_obj)`, built once outside the per-target loop
+and passed into every `fit_once` call as `relax_ctx`, avoids recomputing
+the garment's own adjacency/original-edge-length/pin-weight arrays once
+per target — those are constant across an entire batch run against the
+same garment. (A per-target `core.geometry.TargetContext`, by contrast,
+cannot be hoisted the same way: each target body is different geometry,
+so `fit_once` builds one fresh per call, just exactly once per call
+rather than multiple times as it used to.)
 
 ## 9. Testing
 

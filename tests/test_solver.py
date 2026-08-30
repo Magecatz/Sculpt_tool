@@ -16,7 +16,7 @@ import common  # noqa: E402
 import bpy  # noqa: E402
 
 import sculpt_tool  # noqa: E402
-from sculpt_tool.core import solver  # noqa: E402
+from sculpt_tool.core import geometry, solver  # noqa: E402
 
 
 class ModeARefitPipelineTest(unittest.TestCase):
@@ -100,8 +100,10 @@ class ModeARefitPipelineTest(unittest.TestCase):
         """Same claim, one layer down: calling core.solver directly twice
         with unchanged inputs must be bit-identical."""
         self._bind()
-        first = solver.project_mode_a(self.garment, self.target_body, 1.0)
-        second = solver.project_mode_a(self.garment, self.target_body, 1.0)
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        target_ctx = geometry.TargetContext.build(self.target_body, depsgraph)
+        first = solver.project_mode_a(self.garment, target_ctx, 1.0)
+        second = solver.project_mode_a(self.garment, target_ctx, 1.0)
         diff = common.max_component_diff(first.fitted_positions, second.fitted_positions)
         self.assertEqual(diff, 0.0)
 
