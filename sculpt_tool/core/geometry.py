@@ -132,6 +132,28 @@ def world_space_positions_and_normals(obj, depsgraph):
     ``depsgraph`` is a resolved ``bpy.types.Depsgraph`` (typically
     ``context.evaluated_depsgraph_get()``, obtained by the caller -- see
     module docstring for why this function does not resolve it itself).
+
+    NOT vectorized with NumPy, despite Bear PR Process card
+    1f564161-82f9-4d5d-bd63-665d98790e8a's own "honest scope" listing
+    this as an "easy win" -- verified, empirically, not to be one. The
+    per-vertex ``matrix @ v.co`` / ``(normal_matrix @ v.normal).
+    normalized()`` this does is a REDUCTION (dot product) and a
+    transcendental (``sqrt``, inside ``normalized()``); a from-scratch
+    NumPy re-implementation of either, checked bit-for-bit against
+    ``mathutils``'s own per-vertex result on this project's actual
+    Test_Items corpus (which has non-zero, if small, rotation from FBX
+    import) diverges by 1 ULP on a real fraction of vertices -- observed
+    ~9% for a body/garment pair, worse (~60%) once that error propagates
+    through a downstream bind+fit. A single-elementwise-op function
+    (cross product) matched bit-for-bit in the same check; dot product,
+    matrix-vector multiply, and ``normalized()`` all did not, across
+    several candidate summation orders and both float32- and
+    float64-accumulator variants tried. See the card's PR for the full
+    numeric writeup. This card's acceptance bar is bit-identical output
+    (verified zero-diff, this project's own existing convention -- see
+    e.g. ``tests/test_geometry.py``'s ``assertEqual(diff, 0.0)``), so
+    this function is intentionally left exactly as it was rather than
+    shipping a vectorization that would fail that bar on real assets.
     """
     eval_obj = obj.evaluated_get(depsgraph)
     mesh = eval_obj.to_mesh()
@@ -162,6 +184,28 @@ def world_space_triangles(obj, depsgraph):
 
     ``depsgraph`` is a resolved ``bpy.types.Depsgraph`` -- see module
     docstring and :func:`world_space_positions_and_normals`.
+
+    ``triangle_vertex_indices`` was tried, vectorized, as part of Bear PR
+    Process card 1f564161-82f9-4d5d-bd63-665d98790e8a: a single bulk
+    ``mesh.loop_triangles.foreach_get("vertices", ...)`` read plus a
+    reshape, replacing the per-triangle ``[tuple(lt.vertices) for lt in
+    mesh.loop_triangles]`` Python loop below. Unlike the position half
+    (see :func:`world_space_positions_and_normals`'s docstring), this one
+    IS exactly -- not just numerically-close -- equivalent to the loop it
+    would replace: integer vertex-index data, no floating-point
+    arithmetic anywhere in the path. It was reverted anyway, for the same
+    reason ``core/smoothing.py``'s ``_laplacian_step`` was: measured, not
+    assumed, performance. Benchmarked against the unvectorized loop below
+    at both this project's real Test_Items body (23,153 verts / ~44k
+    triangles) and ``tests/perf.py``'s larger synthetic scale (65,160
+    triangles), the "vectorized" version was a statistical wash at best
+    (within ~10% either way across repeated runs) and slightly SLOWER
+    more often than not -- the ``[tuple(t) for t in flat.reshape(-1,
+    3).tolist()]`` step needed to hand back the same list-of-int-tuples
+    shape callers (``BVHTree.FromPolygons``, per-triangle vertex-index
+    lookups elsewhere in ``core/``) rely on costs about as much
+    Python-level work as the loop it replaces. See the card's PR for the
+    full numbers.
     """
     eval_obj = obj.evaluated_get(depsgraph)
     mesh = eval_obj.to_mesh()

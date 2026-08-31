@@ -123,6 +123,30 @@ def project_mode_a(garment_obj, target_ctx, offset_scale=1.0):
     many vertices as the source body, since the old guard below only ever
     caught an out-of-range index (a target with FEWER vertices) — never a
     same-or-larger target with completely different topology.
+
+    NOT vectorized with NumPy, despite Bear PR Process card
+    1f564161-82f9-4d5d-bd63-665d98790e8a's own "honest scope" calling the
+    "frame construction + offset arithmetic" below a "real win, fully"
+    vectorizable. The frame construction (``geometry.local_frame``) can't
+    be: it calls ``Vector.normalized()``/``Vector.dot()``, which
+    ``core/geometry.py``'s ``world_space_positions_and_normals`` docstring
+    already found don't reproduce mathutils's float32 rounding bit-for-bit
+    via a from-scratch NumPy reimplementation, so that per-vertex loop has
+    to stay exactly as it is. The multiply-add OFFSET arithmetic after it
+    (pure elementwise ops, no reduction -- genuinely safe to vectorize,
+    verified bit-identical) was tried on its own: build ``normal``/
+    ``tangent``/``bitangent`` via the unavoidable per-vertex ``local_frame``
+    loop, convert those plus ``target_positions``/the offset arrays to
+    NumPy, do the multiply-add in bulk, convert the result back to a
+    ``Vector`` list. Measured on this project's real Test_Items bodysuit
+    (2,087 garment vertices): ~3.9ms/call for the NumPy version vs.
+    ~1.7ms/call for the current, all-``mathutils`` version below -- ~2.3x
+    SLOWER, for the same reason ``core/smoothing.py``'s ``_laplacian_step``
+    docstring describes: the per-vertex ``local_frame`` loop this function
+    can't avoid is cheap enough (mathutils Vector ops are C-level) that the
+    NumPy conversion round-trip costs more than the bulk math saves at this
+    project's actual vertex-count scale. See the card's PR for the full
+    numbers.
     """
     info = storage.read_mode_a_binding(garment_obj)
     if info is None:

@@ -101,6 +101,25 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
         # object-local space (same space as mesh.vertices[i].co), so the
         # solver's world-space output has to be brought back into that
         # space before writing it into the Fitted key block.
+        #
+        # NEITHER step below is vectorized with NumPy, despite Bear PR
+        # Process card 1f564161-82f9-4d5d-bd63-665d98790e8a's own "honest
+        # scope" calling this an "easy win". The world->local conversion
+        # is the same matrix @ Vector reduction core/geometry.py's
+        # world_space_positions_and_normals docstring already found does
+        # not reproduce mathutils's float32 rounding bit-for-bit via a
+        # from-scratch NumPy reimplementation -- checked directly against
+        # THIS garment's own matrix_world/fitted_world on the real
+        # Test_Items bodysuit (2,087 vertices): 1,243/2,087 vertices (60%)
+        # diverged by 1 ULP. The flatten-for-foreach_set step (pure data
+        # reshape, no arithmetic, no bit-identity risk at all) was still
+        # tried on its own -- build a NumPy array from fitted_local and
+        # reshape/flatten it instead of the nested list comprehension --
+        # and measured, at a 33k-vertex scale (tests/perf.py's tube), as a
+        # wash-to-slightly-slower (~9.1ms vs ~5.6ms per call for 20 calls),
+        # the same NumPy/mathutils.Vector boundary-crossing overhead
+        # core/smoothing.py's _laplacian_step docstring describes. See the
+        # card's PR for the full numbers.
         matrix_inverse = garment_obj.matrix_world.inverted_safe()
         fitted_local = [matrix_inverse @ co for co in fitted_world]
 
