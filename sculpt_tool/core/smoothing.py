@@ -218,6 +218,38 @@ def _laplacian_step(positions, neighbors, pin_weights):
     (bug card 1638a2d4-45d5-4264-9bc0-4e0ac339936b). Kept pin-aware
     rather than hard-coded to "no pins" so this stays a correct, reusable
     building block on its own.
+
+    NOT vectorized with NumPy, despite Bear PR Process card
+    1f564161-82f9-4d5d-bd63-665d98790e8a's own "honest scope" calling this
+    a "real win" via ``np.add.at`` -- a NumPy version WAS built and
+    verified numerically bit-identical (0.0 diff) against this
+    implementation, once ``Vector.__itruediv__(scalar)``'s actual
+    behavior was accounted for (it is a reciprocal MULTIPLY, ``v * (1.0 /
+    scalar)``, not a direct division -- direct float32 division
+    disagreed with it on ~35% of random cases in isolation; the
+    reciprocal-multiply form matched 0/2000). It was reverted anyway,
+    for a measured PERFORMANCE reason, not a correctness one: this
+    function is called once per outer :func:`relax_positions` iteration,
+    sandwiched between :func:`_edge_length_step` (its ``original_edges``
+    per-edge ``.length``/normalize math has the same reduction/
+    transcendental bit-identity risk ``core/geometry.py``'s docstring
+    describes, so it stays un-vectorized -- see Backlog card
+    5b232224-901f-4c7a-a991-42cb29b5627d) and the outer per-vertex pin
+    blend, both of which operate on plain ``mathutils.Vector`` lists. The
+    NumPy version therefore has to convert its ``positions`` argument
+    from a ``Vector`` list to a NumPy array on entry and back to a
+    ``Vector`` list on return, on EVERY call -- and that round-trip
+    conversion, measured on the ~33k-vertex tube scenario
+    ``tests/perf.py`` uses (10 calls, matching a
+    ``smoothing_iterations=10`` run), cost ~0.30s of the vectorized
+    version's ~0.35s total, against the actual vectorized math
+    (``np.add.at`` plus the elementwise scale/blend) taking only ~0.04s.
+    The unvectorized, all-``mathutils`` version measured ~0.13s for the
+    same 10 calls -- i.e. the "vectorized" version was ~2.7x SLOWER in
+    context, not faster, because it is boxed in on both sides by code
+    this card does not (and, per the reasoning above, largely cannot)
+    also vectorize. See the card's PR for the full numeric and timing
+    writeup.
     """
     result = list(positions)
     for i, neighbor_indices in enumerate(neighbors):
