@@ -75,12 +75,18 @@ def fit_once(garment_obj, target_body_obj, params, depsgraph, relax_ctx=None):
     ``target_body_obj`` and ``depsgraph``, and reused for every step above
     that needs the target body's evaluated geometry (Mode B projection,
     both collision passes) -- this is what makes the target body's
-    evaluation/triangulation/BVH-build happen exactly once per
-    ``fit_once`` call, no matter how many pipeline steps query it or how
-    many times collision resolution runs (Bear PR Process card
-    cd0d1569-36ad-4d79-a82b-6d1115a0bcda). Mode A fits never build a BVH
-    (only ``target_ctx.positions``/``.normals``); Mode B fits and both
-    collision passes reuse ``target_ctx.bvh``.
+    evaluation happen exactly once per ``fit_once`` call, no matter how
+    many pipeline steps query it or how many times collision resolution
+    runs (Bear PR Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda).
+    ``TargetContext.bvh``/``.triangles`` are themselves built lazily (see
+    ``core.geometry.TargetContext``'s docstring) and cached on first
+    access, so a Mode A fit with collision resolution disabled -- which
+    never reads either -- never triangulates or BVH-builds the target
+    body at all, and never requires it to have any faces (Bear PR Process
+    card e6763cc5-d3cf-4021-8541-f5e5dd4a23aa, fixing a regression this
+    card's own extraction introduced). Mode B fits and both collision
+    passes still access ``target_ctx.bvh`` and get the same "no
+    triangulatable faces" ``ValueError`` as before if the target has none.
 
     ``relax_ctx``, if given, is a pre-built ``core.smoothing.
     RelaxContext`` for ``garment_obj`` -- skips rebuilding the garment's

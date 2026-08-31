@@ -182,37 +182,70 @@ class TargetContext:
     Bundles what both ``core.solver`` (Mode B projection) and
     ``core.collision`` (both collision passes, including the second one
     after smoothing -- see ``operators/op_fit.py``'s docstring) need
-    against the SAME target body, so ``core.pipeline.fit_once`` evaluates,
-    triangulates, and BVH-builds the target body exactly once per fit, no
-    matter how many pipeline steps query it.
+    against the SAME target body, so ``core.pipeline.fit_once`` evaluates
+    the target body exactly once per fit, no matter how many pipeline
+    steps query it.
 
     ``positions``/``normals`` are per-TARGET-vertex (vertex-index order),
-    serving Mode A's direct index lookup. ``triangles``/``bvh`` are the
-    triangulated surface (built from the SAME evaluated-mesh read, so
-    ``positions`` here is identical content to what a separate
-    :func:`world_space_triangles` call on the same object/depsgraph would
-    return), serving Mode B's nearest-surface projection and both
-    collision tests' BVH queries. ``name`` is the target object's name,
-    kept only so error messages further down the pipeline can still name
-    the target body without holding onto the ``bpy`` object itself.
+    serving Mode A's direct index lookup -- built eagerly in
+    :meth:`build`, since every fit (Mode A or B) needs them.
+
+    ``triangles``/``bvh`` serve Mode B's nearest-surface projection and
+    both collision tests' BVH queries -- NEITHER is needed by a Mode A
+    fit with collision resolution disabled, which has no notion of faces
+    at all (see :meth:`build`'s docstring). They're therefore exposed as
+    lazily-built properties instead of eager fields: the triangulated
+    surface is computed, and the "no triangulatable faces" check raised,
+    only the first time ``.triangles`` (or ``.bvh``, which needs
+    ``.triangles``) is actually accessed -- by ``project_mode_b`` or by
+    ``core.pipeline.fit_once``'s call into ``core.collision.
+    resolve_collisions``. A pure Mode A fit against a faceless-but-
+    vertexed target body never touches either, so it never pays that
+    check. Once built, the result is cached on the instance -- still only
+    evaluated/triangulated/BVH-built once per fit no matter how many
+    times a step asks for it.
+
+    ``name`` is the target object's name, kept only so error messages
+    further down the pipeline can still name the target body without
+    holding onto the ``bpy`` object itself.
     """
 
     name: str
     positions: list
     normals: list
-    triangles: list
-    bvh: BVHTree
+    _triangles: list
+    _bvh: "BVHTree | None" = None
+
+    @property
+    def triangles(self):
+        """The target body's triangulated surface (loop-triangle vertex
+        index tuples). Raises ``ValueError`` here, on first access, if
+        the target body has no triangulatable faces -- see the class
+        docstring for why this check is deferred rather than made
+        unconditionally in :meth:`build`."""
+        if not self._triangles:
+            raise ValueError(f"Target body '{self.name}' has no triangulatable faces.")
+        return self._triangles
+
+    @property
+    def bvh(self):
+        """The target body's BVH tree, built lazily (and cached) from
+        :attr:`triangles` on first access -- see the class docstring."""
+        if self._bvh is None:
+            self._bvh = BVHTree.FromPolygons(self.positions, self.triangles)
+        return self._bvh
 
     @classmethod
     def build(cls, target_body_obj, depsgraph):
         """Evaluate ``target_body_obj`` once and build its :class:`TargetContext`.
 
-        Raises ``ValueError`` if the target body has no vertices or no
-        triangulatable faces -- the same checks ``core.solver.
-        project_mode_a``/``project_mode_b`` and ``core.collision.
-        resolve_collisions`` used to make independently (and redundantly,
-        against the same target, multiple times per fit) before this
-        context existed.
+        Raises ``ValueError`` immediately if the target body has no
+        vertices -- every fit mode needs at least that. Does NOT raise
+        for zero triangulatable faces here: that check is deferred to
+        first access of ``.triangles``/``.bvh`` (see the class
+        docstring), matching pre-refactor behavior where ``core.solver.
+        project_mode_a`` only ever required target vertices and never
+        touched triangles/BVH at all.
         """
         eval_obj = target_body_obj.evaluated_get(depsgraph)
         mesh = eval_obj.to_mesh()
@@ -229,16 +262,10 @@ class TargetContext:
 
         if not positions:
             raise ValueError(f"Target body '{target_body_obj.name}' has no vertices.")
-        if not triangles:
-            raise ValueError(
-                f"Target body '{target_body_obj.name}' has no triangulatable faces."
-            )
 
-        bvh = BVHTree.FromPolygons(positions, triangles)
         return cls(
             name=target_body_obj.name,
             positions=positions,
             normals=normals,
-            triangles=triangles,
-            bvh=bvh,
+            _triangles=triangles,
         )
