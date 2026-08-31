@@ -325,7 +325,7 @@ broken," not the evidence for it.
 |---|---|---|---|---|
 | 1 | Mode B accuracy on extreme shape changes | Open | — | Correspondence can misassign on large body-shape deltas near concave/thin geometry; not solved in v1. |
 | 2 | No garment/source-body overlap validation | Open | — | Mode B silently produces a garbage binding if the garment isn't reasonably positioned near its source body at bind time. |
-| 3 | Mode A wrongly requires target body to have triangulatable faces | **Open** | `e6763cc5` (Review — PR [#19](https://github.com/Magecatz/Sculpt_tool/pull/19) open, not yet merged) | Regression from the geometry/pipeline extraction; fix ready, not yet on `master`. See DECISIONS.md §5. |
+| 3 | Mode A wrongly requires target body to have triangulatable faces | Closed | `e6763cc5` (Deployed, PR [#19](https://github.com/Magecatz/Sculpt_tool/pull/19)) | Regression from the geometry/pipeline extraction; lazy `TargetContext` triangle/BVH construction fixes it. See DECISIONS.md §5. |
 | 4 | Graded pin-weight boundary overshoot | **Open** (partially fixed) | `8432ee45` (Deployed, partial fix) / `e893bfdd` (Backlog, structural redesign) | Worst-case 1.19x-1.43x depending on topology, 25-52% incidence; two dual-trajectory redesigns tried and rejected. See DECISIONS.md §3b-3c. |
 | 5 | Batch mode has no NumPy vectorization | Planned, not implemented | `1f564161` (To-Do) | Zero `numpy` imports currently; the smoothing pass's Gauss-Seidel sub-sweeps aren't naively vectorizable regardless. See DECISIONS.md §2. |
 | 6 | Smoothing is the pipeline's dominant per-target cost at scale (~19x collision) | Open, measured, unmitigated | `5b232224` (Backlog) | ~4.73s vs. ~0.25s at ~33k/~30k-vertex scale; not yet measured at real batch-collection scale. |
@@ -346,10 +346,11 @@ limitations rather than defects found in already-built behavior, and
 have never had dedicated tracking cards — they're recorded here as
 known, accepted gaps a future card could pick up, not regressions.
 
-**Note on row 3:** as of this writing PR #19 is open but unmerged, so
-this defect is still live on `master` — a Mode A fit against a
-faceless-but-vertexed target body fails where it used to succeed
-pre-refactor. Re-check this row's status before relying on it.
+**Note on row 3:** PR #19 has since merged and card `e6763cc5` is
+Deployed — this row was corrected during Review (2026-08-31) from the
+Developer's original "Open, PR unmerged" text, which had gone stale
+between when the Developer's worktree branched and when this restructure
+reached Review. See DECISIONS.md §5.
 
 ## 8. Batch/automated extension
 

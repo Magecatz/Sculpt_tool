@@ -632,7 +632,7 @@ layout.
 
 ---
 
-## 5. Mode A faceless-target regression — in progress, PR #19 open
+## 5. Mode A faceless-target regression — fixed, PR #19 merged
 
 **Card `e6763cc5`**, found by Tester while reviewing card `cd0d1569`
 (the `core/geometry.py`/`core/pipeline.py::fit_once` extraction).
@@ -654,14 +654,14 @@ Confirmed with a real repro, git-bisected across the refactor commit.
 Fix (`4e05f6b`, PR #19, `fix/mode-a-faceless-target`): lazy
 triangles/BVH construction on `TargetContext` — only built when Mode B
 or collision resolution actually needs them. Full suite green (48/48)
-per the Developer/Tester agents on the card. **As of this writing, PR #19
-has not been merged to `master`** — the regression is still present on
-`master` (verified directly: `TargetContext.build` on the current
-`master` worktree still builds triangles/BVH unconditionally). See
-ARCHITECTURE.md section 7 for current status.
+per the Developer/Tester agents on the card, and independently re-verified
+by the Reviewer (48/48) before merge. PR #19 has since merged to `master`
+and card `e6763cc5` is Deployed. See ARCHITECTURE.md section 7 (row 3)
+for current status.
 
 A follow-on gap was found while verifying this fix and is separately
-backlogged, not yet an issue on `master` since it only applies once PR
-#19 lands: Backlog card `9aeffb26` — `smoothing_iterations > 0` combined
+backlogged: Backlog card `9aeffb26` — `smoothing_iterations > 0` combined
 with a faceless target and collision resolution off is not covered by
-the new regression tests.
+the new regression tests. This gap is now live on `master` since PR #19
+has landed (it was previously moot, pre-merge); still open on the board
+as of this writing.
