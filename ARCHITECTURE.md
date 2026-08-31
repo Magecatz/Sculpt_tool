@@ -8,16 +8,21 @@ collapsing flat onto the body). Designed to also support batch/automated
 use — fitting one garment across many body variants without a manual
 sculpt pass per pair.
 
-This is the project's first architecture document. It is a design
-artifact, not implementation — no add-on code exists yet. Each numbered
-module below becomes one or more Bear PR Process cards on the shared
-board (project `Sculpt_tool`).
+This started as the project's first architecture document, written
+before any add-on code existed. That is no longer true: `sculpt_tool/`
+is now 3,000+ lines of Python across `core/`, `operators/`, and the UI
+panel, plus a `tests/` suite (see section 9). Each numbered module below
+maps to one or more Bear PR Process cards on the shared board (project
+`Sculpt_tool`); section 7 tracks current known risks and section 9
+covers testing.
 
 ## 1. Chosen approach
 
 **A custom BVH-based bind/solve pipeline, built from first principles on
-top of Blender's own Python primitives (`bmesh`, `mathutils.bvhtree`,
-mesh custom attributes), not a single built-in modifier.**
+top of Blender's own Python primitives (`mathutils.bvhtree`,
+`mathutils.kdtree`, mesh custom attributes), not a single built-in
+modifier.** (`bmesh` was originally planned for here but is not actually
+used anywhere in the codebase — see section 4.)
 
 The pipeline runs in two phases:
 
@@ -81,7 +86,8 @@ by the bind operator based on topology match, are supported:
   Cheap and exact.
 - **Mode B — cross-topology.** Source and target bodies are different
   meshes entirely (a genuinely different/customized character). Built via
-  `BVHTree.FromObject` nearest-surface projection: each garment vertex
+  `BVHTree.FromPolygons` (over the source body's triangulated
+  `loop_triangles`) nearest-surface projection: each garment vertex
   stores a signed `normal_offset` (distance off the surface) and a
   `tangent_offset` (2D, in-plane component) to reduce misassignment near
   seams and thin geometry, plus (as of the bind-time-freeze card, schema
@@ -109,8 +115,8 @@ Mode C).
 
 **Binding is bind-time-frozen — no add-on output may re-enter as input
 (schema v2, closes cards 089ab86f, 1f8e8594, and a third, previously
-uncarded defect in the same family; see section 7 for the full writeup
-of all three):**
+uncarded defect in the same family; see DECISIONS.md §4 for the full
+writeup of all three, and section 7 row 11 for current status):**
 
 - **Mode B's anchor is a bind-time snapshot, not a live re-derivation.**
   `project_mode_b` never reads the source body's mesh, never resolves the
@@ -131,7 +137,7 @@ of all three):**
   declared.** `detect_bind_mode` raises rather than defaulting to Mode A
   when Target Body isn't set yet — there is nothing to compare topology
   against, so guessing Mode A here is exactly what let a mismatched Mode
-  A bind through silently (see section 7 Part C). A forced Mode A/B
+  A bind through silently (see DECISIONS.md §4, Part C). A forced Mode A/B
   override still bypasses this function entirely, per its own escape
   hatch below.
 - **Schema version is enforced, not just recorded.** `SCHEMA_VERSION` is
@@ -147,18 +153,19 @@ of all three):**
 2. **Collision resolution** — BVH-based penetration test against the
    target body; any garment vertex found inside the body is pushed out
    along the binding's own anchor normal (not the locally-nearest
-   triangle's face normal — see §7) by at least the user's
+   triangle's face normal — see DECISIONS.md §1b) by at least the user's
    collision-margin parameter, re-querying up to a small bounded number of
    times and falling back to the anchor point itself if still inside.
    Thin-geometry tunneling is fixed via a second, anchor-based
-   `BVHTree.ray_cast` check (see §7).
+   `BVHTree.ray_cast` check (see DECISIONS.md §1a).
 3. **Smoothing / relaxation** — Laplacian-style relaxation pass, weighted
    by `(1 - pin_weight)` per vertex so pinned regions don't move, and
    constrained against the garment's own original edge lengths so the
    pass smooths noise from steps 1–2 without shrink-wrapping the garment
    flat. Because this step has no notion of the target body and can push
    an already-cleared vertex back into it, step 2 (collision resolution)
-   runs a second time on step 3's output when both are enabled — see §7.
+   runs a second time on step 3's output when both are enabled — see
+   DECISIONS.md §1b.
 4. **Bake** — result is written to a Shape Key named `Fitted` on the
    garment object (created fresh or overwritten), never mutating base
    mesh data. This sidesteps a hard platform limitation: Blender's Python
@@ -175,11 +182,18 @@ didn't, since there is then nothing new for it to re-check).
 
 ## 4. Blender integration surface
 
-- **Target platform:** Blender 4.x, baseline 4.2 LTS. Uses `bmesh`,
-  `mathutils.bvhtree.BVHTree`, `mathutils.kdtree` (fallback nearest-vertex
-  queries), and the mesh generic-attribute API. Batch mode uses NumPy
-  (bundled with Blender) with `foreach_get`/`foreach_set` bulk vertex
-  access rather than per-vertex Python loops — see Risks on performance.
+- **Target platform:** Blender 4.x, baseline 4.2 LTS (developed against
+  and tested under 5.2.1 LTS — see section 9). Uses
+  `mathutils.bvhtree.BVHTree` (Mode B binding/fit, both collision passes)
+  and `mathutils.kdtree` (Mode A's primary bind-time mechanism — a direct
+  nearest-vertex search, not a fallback), plus the mesh generic-attribute
+  API. There is no `bmesh` usage anywhere in the codebase (verified:
+  `grep -r bmesh sculpt_tool/` returns nothing) — an earlier version of
+  this document listed it as a dependency; it was never actually used.
+  NumPy bulk vertex access (`foreach_get`/`foreach_set`) for batch mode is
+  **planned, not implemented** — there are currently zero `numpy` imports
+  in the codebase. Split into its own card, `1f564161` (To-Do); see
+  section 7.
 - **Operators** (`bpy.types.Operator`):
   - `OT_bind_garment` — computes and stores the binding (Mode A or B,
     auto-detected) between the active garment and a chosen source body.
@@ -195,17 +209,27 @@ didn't, since there is then nothing new for it to re-check).
   collision margin, smoothing iterations), Pin Regions (vertex-group
   list, standard Blender weight-painting workflow), and Batch (target
   Collection picker, Run Batch button, progress reporting).
-- **Settings:** a `PropertyGroup` holding source/target object pointers,
-  numeric parameters, and pin vertex-group references, attached to the
-  garment `Object` so settings travel with the object, not just the
-  scene.
+- **Settings:** a `PropertyGroup` (`properties.SCULPTTOOL_PG_settings`)
+  holding source/target object pointers, the bind-mode override, and
+  numeric parameters, attached to the garment `Object` so settings travel
+  with the object, not just the scene. It does **not** hold pin
+  vertex-group references — there is deliberately no such field. Pin
+  groups are discovered by name at read time: any vertex group on the
+  garment whose name starts with `Pin_` (`core.smoothing.PIN_GROUP_PREFIX`)
+  is treated as a pin group by `core.smoothing.compute_pin_weights`, and
+  the UI (`ui_panel.py`'s `SCULPTTOOL_UL_pin_groups`) filters the
+  object's vertex-group list down to that same prefix rather than reading
+  it from a stored list. `Pin_` name-matching is the single source of
+  truth for "which groups are pins" — a future UI card should read/write
+  through it rather than adding a second, PropertyGroup-backed list that
+  could drift out of sync with it.
 
 ## 5. Module breakdown
 
 ```
 sculpt_tool/
   __init__.py            add-on registration (bl_info, register/unregister)
-  properties.py           PropertyGroup: source/target refs, parameters, pin groups
+  properties.py           PropertyGroup: source/target refs, bind-mode override, numeric parameters (no pin-group field -- see section 4)
   ui_panel.py             N-sidebar panel: Binding / Fit / Parameters / Pin Regions / Batch
   operators/
     op_bind.py            OT_bind_garment
@@ -223,9 +247,11 @@ sculpt_tool/
 ```
 
 Each `core/` module is pure logic operating on mesh data (testable
-outside the UI) and takes an already-resolved `depsgraph` parameter for
-any evaluated-mesh read rather than resolving Blender's own current
-context itself (Bear PR Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda
+outside the UI, and actually exercised that way — see section 9) and
+takes an already-resolved `depsgraph` parameter for any evaluated-mesh
+read rather than resolving Blender's own current context itself (Bear PR
+Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda; verified currently
+true via `grep -r bpy.context sculpt_tool/core/`, which returns nothing
 — `operators/` and `ui_panel.py` are the thin Blender-facing layer that
 resolves that context and wires user input to `core/`). `geometry.py`
 also holds the handful of shared triangle/frame primitives that used to
@@ -261,7 +287,7 @@ passes instead of being rebuilt redundantly.
   the pin is an isolated vertex or part of a continuous pinned band). An
   earlier version scaled the edge-length correction's per-edge weight-
   sharing directly instead of blending at the outer-iteration level,
-  which did not produce a linear blend (see section 7).
+  which did not produce a linear blend (see DECISIONS.md §3a).
 
   **Caveat a user of this parameter needs, not just an implementation
   footnote:** the monotonic, bounded-by-unpinned behavior above holds in
@@ -277,731 +303,54 @@ passes instead of being rebuilt redundantly.
   motivating use case. So partial pin weights are now a large, real
   improvement over the previous near-binary behavior — but they are a
   strong tendency, not a guarantee, and a feathered hem is exactly where
-  the exception lives. Section 7 has the full measurement, the
-  comparison against pre-fix behavior on the same adversarial scenario,
-  and the tracking card (`8432ee45-20a9-47da-be6a-53e3beee39e6`) — now
-  partially fixed, see section 7.
+  the exception lives. See section 7 (row 4) for current status and
+  DECISIONS.md §3b-3c for the full measurement, the comparison against
+  pre-fix behavior on the same adversarial scenario, and the tracking
+  cards (`8432ee45` — partial fix landed; `e893bfdd` — structural
+  redesign still open).
 - **Bind mode override** — force Mode A/B instead of auto-detect, for
   edge cases where topology matches by coincidence but shouldn't be
   treated as correspondence.
 
-## 7. Known risks / limitations (up front)
+## 7. Known risks / limitations
 
-- **Mode B accuracy on extreme shape changes.** Barycentric/normal-offset
-  correspondence degrades on large body-shape deltas (thin → heavy body):
-  local triangle geometry distorts enough that normal direction and
-  in-plane offset assumptions can diverge or flip, especially at concave
-  regions (armpits, crotch) and thin extremities (fingers, where a nearby
-  garment vertex can misassign to the wrong local surface entirely). Not
-  solved in v1 — flagged for future correspondence-quality validation.
-- **No garment/source-body overlap validation.** If a garment mesh isn't
-  reasonably positioned relative to its declared source body at bind
-  time, Mode B will silently produce a garbage binding. v1 does not
-  detect or warn about this (e.g. via an average-nearest-distance sanity
-  check) — future UX improvement.
-- **No garment-vs-garment layering.** The collision pass only resolves
-  garment-vs-single-body interpenetration. Multiple garment layers (e.g.
-  jacket over shirt) are out of scope for v1.
-- **Performance on dense meshes / large batch runs.** This bullet
-  originally named per-vertex BVH queries as the dominant cost. As of the
-  smoothing pass landing, **that is no longer true**: measured at
-  comparable scale, collision's per-vertex BVH work runs ~0.25s (~30k
-  vertices vs. a ~65k-triangle body) while the smoothing pass runs ~4.73s
-  (~33k vertices, `smoothing_iterations=10`) — smoothing is roughly **19x
-  collision**, and is now the pipeline's dominant per-target cost. See the
-  smoothing entry below for the full measurement. Both are fine at
-  moderate (tens-of-thousands vertex) counts for interactive
-  single-target use, but a batch job fitting one garment across hundreds
-  of target bodies multiplies the *whole* per-target cost, smoothing
-  included, and has not been measured at that scale.
+Status table, current as of this writing. "Tracking card" is the Bear PR
+Process board card (project `Sculpt_tool`); "—" means no card exists yet.
+Full measurements, rejected approaches, and complete write-ups for every
+closed/partially-fixed row below live in `DECISIONS.md`, appended to
+after each future card — this table is the answer to "what's currently
+broken," not the evidence for it.
 
-  Two distinct mitigations, and it matters that they are not the same
-  one: the batch operator must use NumPy-vectorized bulk vertex access
-  (`foreach_get`/`foreach_set`) rather than per-vertex Python loops for
-  mesh I/O and the projection/collision steps — called out explicitly on
-  that card. **That mitigation does not touch smoothing's cost.**
-  `_edge_length_step`'s 16 sub-sweeps are Gauss-Seidel (each edge's
-  correction applied immediately, so later edges in the same sweep see
-  earlier ones), so a naive `foreach_get`/`foreach_set` rewrite cannot
-  vectorize them: the sequential dependency is what the curvature-shrink
-  fix's convergence behavior depends on. Reducing smoothing's batch cost
-  therefore needs a different lever than bulk vertex access. Three
-  candidates, none yet validated:
+| # | Risk / limitation | Status | Tracking card | One-line |
+|---|---|---|---|---|
+| 1 | Mode B accuracy on extreme shape changes | Open | — | Correspondence can misassign on large body-shape deltas near concave/thin geometry; not solved in v1. |
+| 2 | No garment/source-body overlap validation | Open | — | Mode B silently produces a garbage binding if the garment isn't reasonably positioned near its source body at bind time. |
+| 3 | Mode A wrongly requires target body to have triangulatable faces | Closed | `e6763cc5` (Deployed, PR [#19](https://github.com/Magecatz/Sculpt_tool/pull/19)) | Regression from the geometry/pipeline extraction; lazy `TargetContext` triangle/BVH construction fixes it. See DECISIONS.md §5. |
+| 4 | Graded pin-weight boundary overshoot | **Open** (partially fixed) | `8432ee45` (Deployed, partial fix) / `e893bfdd` (Backlog, structural redesign) | Worst-case 1.19x-1.43x depending on topology, 25-52% incidence; two dual-trajectory redesigns tried and rejected. See DECISIONS.md §3b-3c. |
+| 5 | Batch mode has no NumPy vectorization | Planned, not implemented | `1f564161` (To-Do) | Zero `numpy` imports currently; the smoothing pass's Gauss-Seidel sub-sweeps aren't naively vectorizable regardless. See DECISIONS.md §2. |
+| 6 | Smoothing is the pipeline's dominant per-target cost at scale (~19x collision) | Open, measured, unmitigated | `5b232224` (Backlog) | ~4.73s vs. ~0.25s at ~33k/~30k-vertex scale; not yet measured at real batch-collection scale. |
+| 7 | Topology-mismatch misdetection (Target Body declared, vertex counts coincide) | Open (soft spot) | — | Two unrelated meshes sharing a vertex count could still misclassify as Mode A; the bind-mode override is the escape hatch. (The related no-Target-Body-declared case is fixed — row 11.) |
+| 8 | No garment-vs-garment layering | By design (v1 scope) | — | Collision pass only resolves garment-vs-single-body; multiple layers (e.g. jacket over shirt) out of scope for v1. |
+| 9 | Cloth-sim refinement is opt-in only | By design | — | Physically-simulated drape is nondeterministic/substep-sensitive; must never be part of the default unattended batch pipeline. |
+| 10 | No UV-space binding (Mode C) | Not scoped | — | Off-body flat-pattern garments unsupported by Mode A or B; plausible future mode. |
+| 11 | Bind-time reference geometry read live instead of frozen (Mode B stale source, re-bind reads own output, Mode A no-target trap) | Closed | `756f27f5` (Deployed, PR [#18](https://github.com/Magecatz/Sculpt_tool/pull/18)) | Binding schema v2 freezes all reference geometry at bind time. See DECISIONS.md §4. |
+| 12 | Collision push-out direction wrong in concave regions | Closed (2 residuals noted) | `1e252575` (Deployed, PR [#15](https://github.com/Magecatz/Sculpt_tool/pull/15)) | Fixed for 7/9 previously-failing corpus garments; Cube.012 and pants residuals investigated, not newly broken. See DECISIONS.md §1b. |
+| 13 | Thin-geometry tunneling | Closed | `c9ff95a5` (Deployed, PR [#7](https://github.com/Magecatz/Sculpt_tool/pull/7)) | Anchor-based ray-cast check pushes tunneled vertices back to the near surface. See DECISIONS.md §1a. |
+| 14 | Smoothing curvature-driven shrinkage (~9% tube-radius regression) | Closed | `afefc553` / `4da4de1a` (Deployed, PR #9/#10/#12) | Internal 16-sub-sweep edge correction drops shrinkage to ~0.58%/~0.575% at 10/40 iterations. See DECISIONS.md §2. |
+| 15 | Partial pin-weight blend was non-linear (0.76x-0.96x instead of ~weight) | Closed | `1638a2d4` (Deployed, PR [#11](https://github.com/Magecatz/Sculpt_tool/pull/11)) | Outer-iteration blend now matches section 6's documented "fully solved ↔ rigid" behavior. See DECISIONS.md §3a. |
+| 16 | `core/` modules called `bpy.context` directly (broke the "pure/testable" claim) | Closed | `cd0d1569` (Deployed, PR [#17](https://github.com/Magecatz/Sculpt_tool/pull/17)) | Depsgraph is now injected by callers; verified zero `bpy.context` under `sculpt_tool/core/`. |
+| 17 | No automated test suite | Closed | `3d1fc8bc` (Deployed, PR [#13](https://github.com/Magecatz/Sculpt_tool/pull/13)) | Headless Blender `unittest` harness under `tests/`; see section 9. |
 
-  - the adaptive/early-exit sub-sweep variant tracked as Backlog card
-    `5b232224-901f-4c7a-a991-42cb29b5627d`;
-  - exposing sub-sweep count as a batch-mode quality/speed trade-off;
-  - **graph/edge-colored Gauss-Seidel** — partitioning edges into colors
-    where no two edges in a color share a vertex, then vectorizing within
-    each color. This is the standard way to parallelize PBD distance
-    constraints, and it *would* let NumPy attack the dominant cost. It
-    changes sweep ordering, so it is not free: it requires re-running the
-    tube shrinkage validation described in the smoothing entry below
-    before adoption. "Needs re-validation" is not the same as
-    "impossible", and this option should not be dismissed on the
-    strength of the sequential-dependency argument above, which only
-    rules out the naive rewrite.
+**Note on rows 1, 2, 7-10:** these are long-standing v1 design-scope
+limitations rather than defects found in already-built behavior, and
+have never had dedicated tracking cards — they're recorded here as
+known, accepted gaps a future card could pick up, not regressions.
 
-  Anyone scoping the Batch card should plan against this explicitly
-  rather than assuming bulk vertex access covers it.
-- **Cloth-sim refinement is opt-in only.** A physically-simulated
-  drape pass is valuable for realism but nondeterministic and
-  substep/margin-sensitive; it must never be part of the default
-  unattended batch pipeline. If added later, it is a separate, clearly
-  optional stage.
-- **No UV-space binding mode (Mode C) in v1.** Garments authored fully
-  off-body (flat pattern pieces matched to the body via UV
-  parameterization rather than 3D proximity) are not supported by either
-  Mode A or B. Noted as a plausible future mode, not scoped now.
-- **Topology-mismatch misdetection (partially addressed — see the
-  no-Target-Body-set case below, still a soft spot otherwise).**
-  Auto-detection of Mode A vs. B relies on vertex count/order matching;
-  two unrelated meshes that happen to share a vertex count, WITH a Target
-  Body actually declared, could still be misclassified as Mode A. The
-  bind-mode override parameter exists specifically as the escape hatch
-  for this case, and it remains a known soft spot. The related but
-  distinct failure — no Target Body declared at all — is fixed below
-  (Part C).
-- **Bind-time reference geometry is now frozen — fixes 089ab86f, 1f8e8594,
-  and a third, previously uncarded member of the same family (bump to
-  binding schema v2).** These three shared one root cause: reference
-  geometry the design assumes is frozen at bind time was actually read
-  live, with no detection. `project_mode_a` (per section 3) already never
-  touches the source body at fit time — it applies frozen per-vertex
-  offsets against the target — so Mode A was always correct here; Mode B
-  and the auto-detect heuristic were the outliers, brought in line with
-  Mode A's existing design rather than inventing a new principle.
-
-  - **Part A — Mode B's anchor is frozen at bind time (closes
-    089ab86f-4247-42c4-9652-9d30de33fbdf).** Previously,
-    `project_mode_b` in `core/solver.py` reconstructed the bind-time
-    correspondence point from the source body's *current* mesh via the
-    stored `triangle_index`/barycentric weights on every fit — a
-    different situation from the source body being missing/renamed
-    (which already raised a clear error): if the source body was edited
-    or reshaped after bind, the fit silently reprojected onto the
-    altered geometry with no warning that the binding was stale. Fixed
-    by storing the bind-time anchor directly, in the **source body's own
-    local object space** (`storage.ATTR_SOURCE_ANCHOR_LOCAL`, a
-    `FLOAT_VECTOR`/`POINT` mesh attribute), plus the source body's
-    `matrix_world` at that same bind-time moment
-    (`storage.PROP_SOURCE_BIND_MATRIX`, an object-level property).
-    `project_mode_b` now computes `world_anchor = source_bind_matrix @
-    source_anchor_local[i]` and finds the nearest point to that on the
-    TARGET body's BVH — no source-mesh read, no source-body object
-    lookup, at fit time at all. This deletes structure rather than
-    adding it: `_resolve_source_body` and its "source body missing"
-    error path are gone from `core/solver.py` entirely (a renamed or
-    deleted source body stops being a failure mode too, not just an
-    edited one), Mode B fitting no longer does an extra `to_mesh()` +
-    triangulation of the source body per fit (i.e. per target in a batch
-    run), and `project_mode_b` is measurably smaller than before.
-    `triangle_index`/`barycentric` are still computed and stored at bind
-    time, but are diagnostics only from here on — they are never read at
-    fit time, since indices into the source body's own triangulation
-    have no meaning against a different (target) body's triangle list
-    even before this fix, and now the anchor itself no longer needs them
-    reconstructed at all.
-  - **Part B — no output of this add-on may ever be an input to it
-    (closes 1f8e8594).** Verified empirically under Blender 5.2.1 on
-    real assets (23,153-vert avatar body, 2,087-vert bodysuit):
-    bind → fit → bind again silently changed 1,862 of 2,087 stored
-    `sculpt_tool_bind_normal_offset` values, max delta 0.0332, mean
-    0.0032 — against a legitimate fit displacement of max 0.0357 in the
-    same run, so one accidental re-bind injected error of the same order
-    as the effect being modeled, compounding per cycle, with the
-    operator reporting `FINISHED` and no warning. Root cause: binding
-    reads the garment's (Mode A and B alike) and, for Mode B, the source
-    body's evaluated mesh, and that evaluated mesh includes the `Fitted`
-    shape key's current contribution whenever one is present and active
-    — so re-binding after fitting quietly took this add-on's own prior
-    output as its "original, authored" input. Fixed in
-    `operators/op_bind.py` (not `core/`, since it needs
-    `context.view_layer.update()` to make the depsgraph catch up with a
-    mid-`execute()` mute/unmute, a Blender-context concern `core/`
-    deliberately stays free of): `_bind_time_evaluation` temporarily
-    mutes the `Fitted` key block — by name, `storage.
-    FITTED_SHAPE_KEY_NAME` — on the garment (and the source body, for
-    the same reason, less commonly triggered) around the bind-time
-    evaluated-mesh read, restoring it after even if the read raises.
-    Garment-side *modifiers*, and every other shape key, are left
-    untouched — this deliberately excludes only the add-on's own bake,
-    per the stated rule. Of the three directions the original card
-    considered, this is the middle one: "refuse with an error" would
-    punish the expected iterate-on-fit workflow (re-binding after fit is
-    a normal thing to want to do — e.g. to update Mode B's diagnostic
-    triangle/barycentric fields against a since-changed *source* mesh),
-    and "warn only" would leave a silent wrong result reachable.
-    Regression coverage: bind → fit → bind now produces bit-identical
-    stored bind attributes to the first bind (`tests/
-    test_binding_freeze.py`).
-  - **Part C — the Mode A no-Target-Body-set trap (a third member of
-    the same family, not previously carded).** `detect_bind_mode`
-    returned Mode A whenever `target_body_obj is None` (nothing to
-    compare topology against), and `project_mode_a` only guarded
-    individual `body_index >= target_vertex_count` — an out-of-range
-    check that stays silent whenever the eventual target body has the
-    SAME OR MORE vertices than the source body did, which is exactly the
-    common case. Verified under 5.2.1: binding with Target Body unset
-    chose Mode A, and fitting that binding against a 91,691-vert
-    cross-topology target (source was 23,153) returned `FINISHED` with
-    no error or warning, diverging from the correct Mode B answer by
-    max 0.0415 / mean 0.0052 — LARGER than the entire body deformation
-    being modeled (max 0.0288). The panel layout actively teaches this
-    order: Source Body sits under "Binding", Target Body under "Fit",
-    below it. Fixed two ways together: `bind_mode_a` now records the
-    source body's evaluated vertex count at bind time
-    (`storage.PROP_SOURCE_VERTEX_COUNT`), and `project_mode_a` refuses
-    outright, before touching any per-vertex index, if the target body's
-    vertex count doesn't match it (the old per-index guard remains as
-    defense in depth for anything that slips past); and
-    `detect_bind_mode` now raises rather than defaulting to Mode A when
-    no Target Body is declared, caught by `operators/op_bind.py` and
-    reported as a normal bind error. A forced Mode A/B override still
-    bypasses `detect_bind_mode` entirely, per its own escape hatch, and
-    is unaffected.
-  - **Schema bump.** All three parts share `storage.py` and one schema
-    version bump: `SCHEMA_VERSION` is now 2. A v1 binding is refused at
-    fit time with a clear message (`storage.BindingVersionError`, a
-    `ValueError` subclass — caught by the same `except ValueError` every
-    fit-time caller already had) rather than silently misread (a v1 Mode
-    B binding has neither of Part A's new fields) or falling back to the
-    pre-fix v1 behavior.
-  - **Tests:** `tests/test_binding_freeze.py` covers all four acceptance
-    criteria directly — editing the source body after bind doesn't
-    change a Mode B fit; deleting/renaming the source body after bind no
-    longer breaks fit at all; bind → fit → bind produces bit-identical
-    stored bind attributes; binding with no Target Body set refuses
-    clearly; a vertex-count-mismatched Mode A fit refuses clearly — plus
-    the v1-schema-refusal case. `tests/test_pipeline.py`'s existing Mode
-    B coverage (`ModeBFitOnceTest`) continues to pass unchanged against
-    the new storage layout.
-
-    **Coverage gap found and closed (Tester pass, same card).** Every
-    Part B case above bakes the contaminating `Fitted` key onto the
-    *garment* being re-bound; `_bind_time_evaluation` also mutes it on
-    the *source body* ("the same failure mode applies, less commonly, to
-    a source body that was itself fit as some other garment's target" —
-    see its own docstring), but no test exercised that branch — every
-    source body in the suite was a plain, never-fitted grid, so deleting
-    `source_body_obj` from the `_bind_time_evaluation` call entirely
-    would still have passed all 41 cases. `tests/
-    test_binding_freeze_source_body_mute.py` closes this: it manually
-    bakes a `Fitted` key onto a would-be source body (bypassing Fit
-    entirely, so it guards the general "any pre-existing `Fitted` key
-    block" case, not just Fit's own output shape), binds a garment
-    against it, and confirms the stored anchor reflects the source
-    body's Basis geometry — diverging by construction from what an
-    unmuted read of `core.binding.bind_mode_b` against the same
-    contaminated object would produce. Suite is 42/42 with this test
-    included. An Architect read of `operators/op_bind.py` independently
-    confirms `_bind_time_evaluation` is the sole bind-time evaluated-mesh
-    read path (the only call site of `core.binding.bind_mode_a`/
-    `bind_mode_b` in the add-on), so this was a real test-coverage gap on
-    already-correct code, not a latent bug the test happened to catch.
-- **Collision resolution's push-out direction in concave regions — fixed**
-  (card `1e252575-2b86-4ba5-89f7-bcf0ae9685ba`, the deferred half of card
-  `c9ff95a5-6269-4c82-8789-08113a9dc9d3` that was explicitly deprioritized
-  when tunneling shipped). A full-corpus run against real garments (22
-  meshes across 9 FBX files) measured the residual this caused directly:
-  9 of 22 ended with 50+ vertices still penetrating the body after fit,
-  concentrated in concave/self-occluding regions (straps, hoods, layered
-  pieces, armpit/crotch folds); the other 13 (simple, mostly-convex
-  garments) were the ones that measurement did not put on that
-  failing-9 list -- **not** uniformly zero, as an earlier, unverified
-  version of this section claimed. Most of the 13 do sit at or near 0,
-  but a few sit well above it, including above the 50-vertex mark
-  itself, so "under the failing threshold" describes how they were
-  originally classified, not a guarantee about their individual
-  residual counts. Exact pre-fix residuals for all 13 are reproducible
-  via `tests/corpus_repro.py`'s `CLEAN_GARMENTS` table and its own
-  printed output rather than restated here as fixed numbers, since they
-  can drift if the corpus changes. Root cause: `resolve_collisions()`
-  decided a push-out *direction* from the locally-nearest triangle's own
-  face normal, which in a concave pocket can belong to a different fold
-  of the surface than the one the vertex is actually meant to clear, and
-  so can point sideways or back into the body. Fixed, per an Architect
-  consult on this card, three ways together:
-  - **Push-out normal source** — `resolve_collisions()` now pushes along
-    `anchor_normal` (`core.solver.ProjectionResult.anchor_normals`, the
-    binding's own per-vertex reference direction, already used by the
-    tunneling fix below) instead of the locally-nearest triangle's face
-    normal. `hit_location` (the nearest surface point) is still the
-    position the push originates from — only the direction source
-    changed.
-  - **Bounded re-query loop** — a single push along a fixed direction can
-    still leave a vertex inside a concave pocket (or move it into a
-    different fold of the same pocket), so `_push_out_locally()` in
-    `core/collision.py` re-runs the inside/outside test after each push,
-    up to 3 attempts, falling back to `anchor_position + anchor_normal *
-    collision_margin` — the same guaranteed-correct-by-construction point
-    the tunneling fix already relies on — if still inside after that many.
-    Every vertex this test flags now resolves to a definite, correct-side
-    answer in bounded time. The bound is small deliberately: collision
-    resolution is the cheap side of the pipeline relative to smoothing
-    (~0.25s vs. ~4.73s at comparable scale, see the performance entry
-    above), and only vertices actually flagged as interpenetrating pay for
-    extra attempts.
-  - **Post-smoothing collision re-pass** — smoothing (step 3) has no
-    notion of the target body and can drag an already-cleared vertex back
-    into it; nothing previously re-checked collision after smoothing ran.
-    `operators/op_fit.py` now runs `resolve_collisions()` a second time on
-    smoothing's output, reusing the same anchors from the original
-    projection (unaffected by smoothing moving vertices around), when both
-    collision resolution and smoothing are enabled.
-
-  Re-measured on the same real corpus via `tests/corpus_repro.py` (opt-in,
-  `Test_Items/`-dependent, perf.py-style — see its docstring; also runs a
-  real in-process A/B against the pre-fix algorithm, reimplemented inline
-  from the fix's own diff, and an independent ray-parity inside/outside
-  test rather than `collision.py`'s own test, matching the method this
-  card's original measurement used). `tests/test_collision.py`'s
-  synthetic concave-pocket regression remains the fast-suite coverage
-  (the real `Test_Items/` assets are gitignored third-party meshes and
-  cannot be checked in, so `corpus_repro.py` is opt-in rather than part of
-  the gate).
-
-  Corrected claim, replacing this section's original unqualified "all
-  nine dropped substantially" (sent back on review for being asserted
-  with no regenerable numbers): **seven of the nine measurably dropped
-  substantially** (old-algorithm-after → new-algorithm-after residual
-  count: Bunny Suit 251→63, Socks & Harness 423→204, cybercroptop Body
-  336→162, Straps by Vinuzhka 190→38, Sweater 156→45, Zip Up 193→136,
-  Hood Crop 92→42 — roughly −30% to −80% each). The remaining two behave
-  differently, investigated directly rather than papered over:
-  - **pants by Vinuzhka: 233→225, a real but small improvement (~−3%),**
-    not the near-elimination the other seven show. Confirmed (via
-    `tests/corpus_repro.py`'s own instrumentation) that every one of the
-    225 residual vertices *was* pushed by `resolve_collisions()` — the
-    bounded re-query/fallback ran, just didn't clear the independent
-    parity test's stricter global standard on this mesh's denser
-    concave folds. This is the documented "not claimed as a complete fix
-    for every conceivable concave topology" limit above actually showing
-    up on a real asset, not a new defect.
-  - **Cube.012 (Lingerie): 332→332, exactly unchanged.** Confirmed (same
-    instrumentation) that all 332 residual vertices were *never* flagged
-    as interpenetrating by `resolve_collisions()`'s own local
-    nearest-point/normal-sign test under EITHER algorithm version — this
-    card's fix only changes push-out behavior for a vertex already
-    flagged as inside, so it is structurally unable to affect a vertex
-    neither version's local test ever flags. This is a real, pre-existing
-    blind spot: the local test and a global ray-parity test can disagree
-    (root-caused here to part of this asset's raw fitted geometry, before
-    any collision pass, landing implausibly far from the body — a Mode A
-    binding/drape artifact on this mesh's decorative geometry, not a
-    collision-resolution issue) — orthogonal to this card's concave
-    push-out-direction fix and out of its scope, tracked for whoever picks
-    up collision resolution next rather than fixed here.
-
-  This card's own review cycle produced two independent real-corpus
-  measurements of these same two garments that *disagreed with each
-  other* (one found both improved, the other found pants roughly
-  unchanged and Cube.012 got worse); `tests/corpus_repro.py`'s numbers
-  above are a third, checked-in-and-regenerable measurement and agree
-  with neither exactly, but land closest to "pants improves modestly,
-  Cube.012 doesn't improve" — and, per the investigation above, confirm
-  Cube.012 did not get worse, it is bit-for-bit identical before and
-  after this card's fix for the vertices in question.
-
-  Not claimed as a complete fix for every conceivable concave topology:
-  the bounded re-query/fallback guarantees a correct-side answer against
-  `resolve_collisions()`'s own local test, not a minimum-margin-satisfying
-  one against every possible independent measurement, on the very first
-  local push, so extremely convoluted geometry (self-intersecting folds
-  nested several layers deep, or a global test disagreeing with the local
-  one as above) could still need more than the fallback's single
-  anchor-snap to look ideal.
-
-  **Tunneling is fixed** (same card, prioritized half, done in
-  `fix/collision-tunneling`): a vertex that tunnels all the way through
-  thin geometry (e.g. wrist/ankle) is no longer left in place. The fix
-  does not make the inside/outside test on the vertex's own final
-  position smarter — a vertex sitting well past the far wall of a thin
-  slab is genuinely, correctly outside the solid by any point-containment
-  test (nearest-point sign, ray-parity, winding number alike), so no such
-  test can flag it without being wrong. Instead, `core/solver.py`'s
-  `project_mode_a`/`project_mode_b` now return the per-vertex anchor
-  point (and its normal) on the target body's surface that the binding
-  offset was actually measured from — the surface the vertex is meant to
-  be hugging, independent of how far the offset then carried it — via a
-  `ProjectionResult` dataclass, instead of discarding it after computing
-  the offset. `resolve_collisions()` (now
-  `resolve_collisions(fitted_positions, anchor_positions, anchor_normals,
-  target_body_obj, collision_margin)`) uses that anchor for a second,
-  bounded `BVHTree.ray_cast` per vertex — only when the existing
-  nearest-point test didn't already flag it — checking whether the
-  straight segment from anchor to fitted position crosses the target
-  body's own surface at all. That can only happen if the offset carried
-  the vertex through solid material, which is exactly what "tunneled"
-  means; a vertex caught this way is pushed back to
-  `anchor_position + anchor_normal * collision_margin` (the near surface)
-  rather than whatever the nearest-point query would find on the far
-  side. One extra bounded ray-cast per vertex, same single BVH build per
-  call as before — no meaningful perf regression at the scales this
-  pipeline targets (verified: ~30k vertices against a ~65k-triangle body
-  in ~0.25s). Known limitation of this approach, accepted as out of
-  scope: on sufficiently convoluted/bumpy geometry the anchor-to-fitted
-  segment can graze an unrelated nearby fold of the body and produce a
-  false-positive tunneling detection — the same class of blind spot as
-  the concave push-out-direction issue above, not a new one. Separately,
-  worth flagging for whoever picks up Smoothing (not a defect here): because
-  the corrected vertex is snapped to `anchor_position + anchor_normal *
-  collision_margin`, a pure normal-offset point, its tangential/bitangent
-  offset is collapsed to zero — the correct, intentional trade-off for
-  collision safety, but it makes a tunnel-corrected vertex a categorically
-  different kind of displacement (larger, differently shaped) than the
-  ordinary sub-margin jitter the rest of the pipeline produces. Validated by
-  an Architect consult on this card before implementation (the anchor
-  point was already being computed by `solver.py` and thrown away, so
-  this needed no new binding-time data and no widening of
-  `core/collision.py`'s module boundary beyond taking two more
-  already-computed lists as parameters).
-
-- **Smoothing's edge-length constraint now iterates internally per
-  outer iteration, rather than running a single relaxation sweep.**
-  `core/smoothing.py`'s `relax()` runs one damped Laplacian step
-  followed by `_EDGE_CORRECTION_SUBSTEPS` (16) internal Gauss-Seidel
-  sub-sweeps over all edges pulling each back toward its original
-  (base-mesh) length, per `smoothing_iterations`. A single sweep per
-  iteration was found (Tester report, Architect-confirmed) to leave
-  enough residual edge-length error that the next iteration's Laplacian
-  step compounded a fresh contraction on top of it: on a completely
-  clean, unperturbed, unpinned cylindrical/tube-shaped garment (zero
-  noise, zero pins — the textbook case section 1's anti-shrinkwrap goal
-  exists to protect) this produced ~9% radius shrinkage after 10
-  `smoothing_iterations`, a straightforward regression against that
-  goal, not an edge case. Looping the edge-length correction internally
-  fixes this: on this card's own re-measured synthetic tube repro
-  (32-segment, 20-ring cylinder, zero noise, zero pins), radius
-  shrinkage at 10 iterations dropped from ~9% to ~0.58%, and at 40
-  iterations it was ~0.575% — confirming the residual plateaus rather
-  than continuing to compound as `smoothing_iterations` grows. (The
-  Architect's own tuning pass, on a different synthetic mesh, measured
-  ~0.2% at the same sub-sweep count; the exact residual is mesh-
-  dependent, but the qualitative behavior — low-single-digit-percent or
-  better, non-compounding — matches.) `relax(iterations=...)`'s public
-  signature and semantics are unchanged: it still counts outer
-  Laplacian+constraint iterations exactly as before, and a fully-pinned
-  vertex (`pin_weight == 1.0`) is still exactly untouched. **Correction
-  (Architect consult, post-merge):** this section originally claimed the
-  ~16x increase in inner-loop work was "cheap relative to the pipeline's
-  per-vertex BVH collision work." That was measured wrong. Actual
-  numbers on a ~33k-vertex synthetic tube at `smoothing_iterations=10`:
-  ~4.73s with this fix, versus ~0.50s before it. Measured against the
-  collision pass's own documented figure at comparable scale (~30k
-  vertices against a ~65k-triangle body in ~0.25s, cited above), the
-  fixed smoothing pass is now roughly **19x more expensive than
-  collision**, not cheap relative to it. The fixed sub-sweep count also
-  means this cost is linear in batch collection size — it scales
-  directly with however many target bodies a real Batch run processes,
-  and hasn't yet been measured at that scale. An adaptive/early-exit
-  sub-sweep variant (stopping once residual edge-length error falls
-  under some threshold instead of always running all 16) is a known,
-  unvalidated candidate to revisit if real Batch runtimes demand it —
-  left in Backlog as a conditional future item, not being built now.
-  Tracked as Backlog card `5b232224-901f-4c7a-a991-42cb29b5627d`.
-  This also fully re-verified clean against the collision pass's
-  anchor-based tunneling correction (see above): a vertex snapped by
-  `anchor_position + anchor_normal * collision_margin` next to neighbors
-  that keep their full authored offset is a genuinely larger,
-  differently-shaped discontinuity than ordinary projection/collision
-  jitter, and the harder-converging edge-length constraint still keeps
-  a thin-geometry tunneling-correction scenario finite with bounded edge
-  lengths through smoothing, no blow-up — re-tested on this card, not
-  just assumed unaffected by the internal-loop change. A garment/body
-  pairing that triggers tunneling correction on many neighboring
-  vertices at once may still show a locally tauter or slower-to-relax
-  patch near the correction compared to ordinary noise elsewhere. Not a
-  bug; not solved further here.
-
-- **Partial pin weights now blend roughly linearly (largely fixed; was
-  closer to binary than a smooth gradient — one measured residual
-  remains, at the bottom of this entry).** Section 6 describes pin weight as
-  blending a vertex between "fully solved" and "rigid, unchanged." That
-  was accurate for the damped Laplacian step alone (which scales each
-  vertex's own displacement directly by `(1 - pin_weight)`) but not for
-  the combination with the edge-length correction sub-sweeps:
-  `core/smoothing.py`'s `_edge_length_step()` used to distribute each
-  edge's correction between its two endpoints by free-weight-sharing
-  (`free_a / (free_a + free_b)`, where `free_x = 1 - pin_weight_x`)
-  rather than applying `(1 - pin_weight)` to each vertex's own share
-  independently. In aggregate this pulled a partially-pinned vertex much
-  closer to unpinned behavior than its weight alone suggested — a vertex
-  at `pin_weight = 0.5` moved roughly 0.76x-0.96x of an unpinned vertex's
-  displacement, not the ~0.5x the section 6 description implied. Only
-  `pin_weight == 0.0` and `pin_weight == 1.0` behaved as documented.
-
-  **Fixed** (bug card `1638a2d4-45d5-4264-9bc0-4e0ac339936b`): pin
-  weighting moved out of the per-edge/per-vertex math entirely and into
-  `relax()`'s outer loop. Each outer iteration now computes an entirely
-  unpinned "fully solved" candidate (the same `_laplacian_step` +
-  `_edge_length_step` internals, called with every pin weight forced to
-  `0.0`), then blends every vertex between its own pre-iteration position
-  and that candidate by its own `(1 - pin_weight)` —
-  `new = old * pin + candidate * (1 - pin)`. This is a direct
-  implementation of the section 6 language rather than an approximation
-  of it. `_laplacian_step`/`_edge_length_step` themselves are unchanged
-  (still pin-aware, still correct standalone building blocks); `relax()`
-  simply no longer calls them with the real per-vertex pin array.
-
-  An intermediate fix was tried and rejected before landing this one:
-  scaling `_edge_length_step`'s per-edge weight-sharing by each vertex's
-  own `(1 - pin_weight)` directly (splitting each edge's correction pool
-  50/50 between endpoints, then damping each endpoint's own half by its
-  own free weight) — Architect-recommended as the natural mirror of the
-  Laplacian step's self-referential scaling. It is correct for a single
-  isolated step given fixed neighbor positions, but empirically produced
-  a non-linear and even non-monotonic aggregate blend across multiple
-  outer iterations: on a disconnected-chain test isolating a single
-  pinned vertex from cross-talk, 10 outer iterations measured
-  pin_weight=0.25 moving *more* than pin_weight=0.5 (ratios 1.16 and 1.17
-  respectively against an unpinned baseline — both **above** the
-  unpinned vertex's own displacement), because a free neighbor's
-  correction share was capped independent of the pinned vertex's own
-  resistance, letting the neighbor "wind up" against the slower-moving
-  pinned vertex over repeated iterations faster than the reduced
-  per-step correction could cancel. The outer-iteration blend adopted
-  instead avoids this because pin weighting never participates in the
-  per-edge/per-neighbor math at all — it's a pure per-vertex
-  old/candidate interpolation applied once per iteration, so it cannot
-  introduce this kind of cross-vertex feedback.
-
-  Re-measured on this fix (`core/smoothing.py`'s `relax()`, disconnected-
-  chain and 2D-grid test meshes, `smoothing_iterations` 1-10):
-  - **Isolated pinned vertex** (single pinned vertex, unpinned
-    neighbors): pin_weight 0.25/0.5/0.75 moved ~0.70-0.91x / ~0.44-0.80x
-    / ~0.21-0.60x of an otherwise-identical unpinned vertex's
-    displacement across 1-10 outer iterations — exactly linear at 1
-    iteration (0.75/0.50/0.25 to 4 decimal places), drifting somewhat
-    further from exact as iterations and neighbor feedback accumulate,
-    but always monotonic in pin weight, and bounded by the unpinned
-    baseline in every isolated-vertex configuration tested (see the
-    graded-boundary caveat below for a configuration where this bound
-    does not hold).
-  - **Continuous pinned band** (a realistic `Pin_Hem`-style selection
-    where every pinned vertex's neighbors are also pinned): pin_weight
-    0.25/0.5/0.75 measured ~0.84x/~0.68x/~0.47x at 10 outer iterations —
-    still monotonic, and bounded by the unpinned baseline in every
-    uniform-band configuration tested (again, see the caveat below), but
-    a visibly softer blend than an isolated pin at the same weight and
-    iteration count, since neighboring pinned vertices' unpinned
-    candidates reinforce each other's advancement iteration over
-    iteration. Still a large improvement over the pre-fix 0.76x-0.96x
-    near-binary plateau, and worth knowing when tuning a specific
-    garment's pinned regions.
-  - **Boundaries preserved exactly**: `pin_weight == 1.0` still produces
-    bit-for-bit zero movement (including through overlapping-`Pin_*`-
-    group sum-and-clamp to exactly 1.0), and `pin_weight == 0.0` is
-    bit-for-bit identical to pre-fix behavior (the candidate computation
-    is the same zero-pin code path as before).
-  - **Curvature-shrink fix unaffected**: the zero-pin tube/cylinder
-    shrinkage re-test (32-segment, 20-ring cylinder) measured ~0.56% at
-    10 iterations and ~0.56% at 40 (plateauing, matching the ~0.58%/
-    ~0.575% figures above within measurement noise) — expected, since
-    with all pins at `0.0` the candidate computation is exactly the
-    pre-fix code path, unchanged.
-  - **Known residual, reduced but not fully bounded in every topology: a
-    graded pin-weight region near a mesh boundary, combined with input
-    position noise, can exceed the unpinned baseline.** The isolated-pin
-    and continuous-band bounds
-    above hold in every configuration tested, but neither covers a
-    *graded* pin region (neighboring vertices at different pin weights)
-    sitting near the mesh's own free boundary with some vertex-position
-    jitter present. That combination is not a contrived corner case — a
-    weight feathering out toward zero at a garment's free edge, combined
-    with the ordinary positional noise a real post-collision-resolution
-    mesh already has, is close to the literal definition of a real
-    `Pin_Hem`/`Pin_Cuff` selection. Tester found one such counterexample
-    (7x7 grid, radial graded band, one seed, 15 outer iterations): a
-    `pin_weight = 0.25` vertex moved ~6% more than the most-displaced
-    `pin_weight = 0.0` vertex in the same run. Reviewer independently
-    reproduced this on a broader sweep (flat-panel and cylindrical
-    hem-ring topologies, varying grid size/grading width/jitter
-    amplitude/seed/iteration count): the overshoot appears in roughly
-    3-4% of graded-boundary-plus-jitter configurations tried (0/24 with
-    zero jitter — noise is necessary to trigger it; it also vanishes on
-    interior, non-boundary-adjacent graded regions), and can be
-    considerably larger than the Tester's single data point — up to
-    ~46% on a flat panel and ~32% on a cylindrical hem-ring, both well
-    above the initial ~6% report. It does not grow monotonically with
-    iteration count (e.g. 26%/46%/11% overshoot at 10/15/20 iterations
-    on the same seed). Likely cause: each outer iteration's "fully
-    unpinned candidate" is computed from every vertex's own *current*,
-    already partially-blended position (and its neighbors' likewise
-    partially-blended positions), not from a truly independent, fully-
-    relaxed simulation — at a pin-weight gradient the edge-length
-    correction can assume more elasticity in a lagging neighbor than
-    that neighbor will actually exhibit once its own blend is applied,
-    producing a genuine (not measurement-noise) transient overshoot. For
-    context: the identical adversarial sweep run against the pre-fix
-    (`3ccbcac`) code fails far more often (48% of configurations vs.
-    3.9% here) and far more severely (worst-case 218% overshoot vs. 46%
-    here) — so despite this residual, the fix is a substantial
-    improvement over prior behavior even in the specific scenario that
-    exposes it, not only in the typical case. Not fixed here: tightening
-    this further looks like it needs a different candidate-computation
-    strategy (one that doesn't let an un-relaxed neighbor's lag leak into
-    the correction math at a pin gradient), not a small tweak to the
-    current approach — i.e. another design iteration, best done with a
-    fresh Architect look, rather than something to block this fix on.
-    Tracked as bug card `8432ee45-20a9-47da-be6a-53e3beee39e6`.
-
-    **Partially fixed** (same card, `fix/pin-boundary-overshoot`): per
-    the Architect's directed cheap experiment (try this before any
-    structural redesign, since every structural fix candidate costs
-    roughly 2x smoothing time or loses pin anchoring, for a residual that
-    only affected 3-4% of an adversarial sweep and defaults off),
-    `core/smoothing.py`'s `relax()` now passes the REAL per-vertex pin
-    array to `_edge_length_step` for the outer-iteration candidate
-    computation, instead of an all-`0.0` array (`_laplacian_step` still
-    gets an all-`0.0` array — only the edge-length correction's
-    mass-weighted split changed). This directly targets the likely cause
-    above: `_edge_length_step` already splits each edge's length
-    correction between its two endpoints by `free_a / (free_a + free_b)`;
-    feeding it the real pin weights means a neighbor's own resistance to
-    movement is visible to that split, instead of every neighbor being
-    treated as fully free regardless of how pinned it actually is. No
-    per-call cost change (same sub-sweep count, same loop shape), and the
-    exact `pin_weight == 0.0` / `pin_weight == 1.0` boundaries are
-    unaffected (verified: `tests/test_smoothing.py::PinWeightBoundaryTest`
-    stays green — a `pin_weight == 1.0` vertex's own outer-iteration blend
-    discards whatever the edge-length step computed for it either way,
-    and an all-`0.0` pin array everywhere reduces `_edge_length_step`'s
-    split back to the original 50/50 case).
-
-    Measured on a fresh, wider seed/grading-width/jitter-amplitude sweep
-    than the original 8-seed/2-grading-width/one-jitter-value grid found
-    the residual with (needed to be widened because the fix reduces the
-    overshoot enough that the original grid stopped finding a
-    representative worst case), on the ORIGINAL fixed 7x7 grid only —
-    **before** this fix, the wider grid's worst-case ratio was ~1.61x
-    (partially-pinned vertex moving 61% more than the most-displaced
-    unpinned one), with ~52% of the swept configurations showing at least
-    some overshoot; **after**, the same grid's worst case was ~1.19x, with
-    well under half as many configurations affected. A substantial
-    reduction on that one topology, not an elimination.
-
-    **This 7x7-grid-only figure did not generalize (Reviewer rejection,
-    first re-review pass on this card).** A broader Reviewer sweep across
-    additional topologies (larger flat grids, a cylindrical hem-ring),
-    using the Reviewer's own measurement methodology, found this fix
-    reduced worst-case overshoot MAGNITUDE (1.81x → 1.28x in that sweep)
-    but not INCIDENCE — incidence on those wider topologies rose roughly
-    20-35x even as individual-occurrence magnitude improved, and a plain
-    12x12 grid alone exceeded the 7x7-tuned 1.22 test ceiling with no
-    exotic topology needed. Verdict (Architect-concurred): a
-    topology-specific lever-tweak that redistributed the problem rather
-    than converging on it.
-
-    **Re-verified honestly, on three topologies, using the checked-in
-    test's own methodology** (`tests/test_smoothing.py::
-    GradedBoundaryAdversarialSweepTest`, widened on the current pass to
-    sweep a 7x7 flat grid, a 12x12 flat grid, and a cylindrical hem-ring —
-    an open-ended tube graded from its own free boundary ring — each with
-    its own ceiling rather than one shared number, since the three do not
-    converge to the same worst case): worst-case ratio / incidence is
-    **1.19x / 25.0%** on the 7x7 grid, **1.30x / 25.5%** on the 12x12
-    grid, and **1.43x / 52.1%** on the cylindrical hem-ring. The fix
-    remains a real, substantial improvement over the pre-fix baseline on
-    every topology tested (pre-fix was ~1.61x/52% even on the easiest,
-    7x7 case), but incidence is clearly topology-dependent and highest on
-    curved geometry — a `Pin_Hem` selection on a sleeve/cuff is exactly
-    the shape most exposed to this residual. These are the honest,
-    currently-accurate figures; the Reviewer's own ~1.28x/20-35x-incidence
-    numbers from the rejection above used a different, incompatible sweep
-    methodology and should not be conflated with these.
-
-    **The 7x7 ceiling itself needed one more honesty bump (Reviewer pass
-    3 on this card, Architect-confirmed non-blocking).** The 1.19x/25.0%
-    figure above (and the 1.22x/30.0% test ceiling it was measured
-    against) came from sweeping `seeds=range(16)` only. An independent
-    Reviewer re-check found seed 203 on the identical 7x7 topology —
-    using `grading_width`/`jitter_amplitude`/`iterations` values already
-    inside the checked-in sweep's own sets, just a seed outside
-    `range(16)` — reproducibly measures **1.2350x**, exceeding that
-    ceiling. This is not a new failure mode or a topology the fix
-    doesn't generalize to (contrast the 12x12-grid finding that got the
-    first pass rejected, which was a wide structural blowup on an
-    entirely untested topology): it is the same topology, same fix, one
-    additional seed grazing a ceiling that was only ever "the worst of
-    16 seeds we happened to check," not a proven bound — exactly the
-    caveat the docstrings and this section already carried. Folding seed
-    203 into the checked-in sweep (`seeds=list(range(16)) + [203]`) and
-    re-measuring gives worst=1.2350x, incidence=27.7% (113/408); the 7x7
-    test's ceiling is now **1.26x / 33.0%**, still comfortably below
-    both rejected dual-trajectory prototypes' numbers (1.39x-6.75x,
-    32-94% incidence) documented below, so it remains a meaningful
-    regression guard rather than a rubber stamp. No code change, no
-    further redesign attempted — Architect-confirmed this is scope
-    creep to chase further given the real fix is already tracked as
-    Backlog card `e893bfdd-bedc-42dc-98c8-9150ed0b742e`.
-
-    **Separately, incidence roughly doubled overall on an independent
-    Reviewer sweep, even though worst-case magnitude improved.** Using
-    its own methodology (distinct from the checked-in test's per-topology
-    grid above, and not directly comparable to it — same caveat as the
-    ~1.28x/20-35x-incidence figures earlier in this section), a Reviewer
-    pass measured incidence going from ~16.67% pre-fix to ~31.11%
-    post-fix, while worst-case magnitude dropped from ~1.6441x to
-    ~1.4364x over the same comparison. This mirrors the finding that got
-    the first fix attempt on this card rejected: magnitude and incidence
-    are two different axes, and this fix trades one for the other rather
-    than eliminating either. Recorded here explicitly, not just implied
-    by the per-topology incidence figures above, so it doesn't read as
-    an oversight: this is a known, accepted tradeoff of the shipped
-    single-trajectory design (same root cause as the graded-boundary
-    residual itself — see above), not a discrepancy between this section
-    and the numbers above it.
-
-    **Two "dual-trajectory" structural redesigns were prototyped on this
-    same card (current pass) and rejected**, per an Architect consult,
-    since tightening the fix above further looked like it needed a
-    different candidate-computation strategy rather than another tweak to
-    the same lever. Both maintained a second `free` position trajectory
-    that, unlike the shipped fix's `candidate` (re-derived from `current`
-    every outer iteration), was never blended back toward the pin-weighted
-    `current` trajectory — on the theory that a truly independent,
-    never-lagging reference would remove the coupling mechanism instead of
-    damping its effect. Measured on the same three-topology sweep above:
-
-    - **Fully pin-independent** (`_laplacian_step` and `_edge_length_step`
-      both always called with an all-`0.0` pin array for `free`): worst
-      ratio 1.39x / 1.32x / 1.55x, incidence 65.6% / 32.3% / 72.2% on the
-      7x7 grid / 12x12 grid / hem-ring respectively — worse than the
-      shipped fix on every topology.
-    - **Hybrid** (`free`'s `_laplacian_step` call left at all-`0.0`, but
-      its `_edge_length_step` call given the real pin array): worst ratio
-      6.75x / 5.94x / 3.67x, incidence 93.0% / 93.8% / 85.4% — far worse
-      still, and this variant also broke `PinBlendMonotonicityTest`
-      outright (an isolated `pin_weight = 0.5` vertex displacing more than
-      both `pin_weight = 0.25` and the unpinned baseline, a guarantee that
-      had held under every prior design).
-
-    **Root cause of both failures (Architect-confirmed, architectural, not
-    a tuning miss):** neither variant ever resets the persistent `free`
-    trajectory back toward the pin anchor each outer iteration, the way
-    the shipped single-trajectory design resets `current` every iteration.
-    Without that reset, a highly-pinned vertex's `free` position still
-    gets dragged toward its neighbors' average every iteration by the
-    always-unpinned `_laplacian_step` call, with nothing bounding the
-    drift — it compounds across `iterations` instead of plateauing. This
-    means any dual-trajectory variant lacking a per-iteration reset toward
-    the pin anchor will fail this way regardless of how its edge-length
-    split is tuned; it is the per-iteration reset itself, not the internal
-    correction math, that actually bounds drift in the shipped design.
-
-    **Decision (Architect-approved close-out, current pass):** per the
-    Architect's stop condition — no clear win across all three topologies
-    on either prototype, and one broke a correctness invariant outright —
-    no third structural redesign was attempted. The shipped fix (real pin
-    array into `_edge_length_step`, single trajectory) remains as landed;
-    both dual-trajectory prototypes are reverted and documented here and
-    in `core/smoothing.py`'s docstrings so a future attempt does not
-    re-derive the same dead end. The residual is accepted as a documented
-    limitation, topology-dependent and worst on curved/hem-adjacent
-    geometry, tracked under this same bug card plus Backlog card
-    `e893bfdd-bedc-42dc-98c8-9150ed0b742e` for any future genuine
-    structural redesign beyond dual-trajectory.
+**Note on row 3:** PR #19 has since merged and card `e6763cc5` is
+Deployed — this row was corrected during Review (2026-08-31) from the
+Developer's original "Open, PR unmerged" text, which had gone stale
+between when the Developer's worktree branched and when this restructure
+reached Review. See DECISIONS.md §5.
 
 ## 8. Batch/automated extension
 
@@ -1038,9 +387,9 @@ every card from here on is verified against a real Blender, not just
 statically. Earlier cards (including the two most numerically delicate
 passes — collision resolution and smoothing) predate this and shipped
 without a Tester able to run anything; this section exists so that gap
-doesn't recur and so every quantitative claim added below (or above, in
-section 7) has a checked-in script behind it, not just testimony from a
-session that's since gone.
+doesn't recur and so every quantitative claim added below (or in
+`DECISIONS.md`) has a checked-in script behind it, not just testimony
+from a session that's since gone.
 
 **Where tests live:** `tests/` at the repo root, next to `sculpt_tool/`.
 Stdlib `unittest`, not pytest — pytest isn't vendored into Blender's
@@ -1055,8 +404,9 @@ bundled Python and this avoids needing to maintain that.
   ```
 
   Every future Tester should run this exact command rather than writing
-  a fresh throwaway script — that's what let section 7's numbers drift
-  into unreproducible testimony the first time.
+  a fresh throwaway script — that's what let this document's numbers
+  drift into unreproducible testimony the first time (see
+  `DECISIONS.md`, where those numbers now live).
 - `tests/common.py` — shared synthetic-mesh builders (`make_grid`,
   `make_tube`, pin-group helpers) and a `update_scene()` helper for a
   Blender scripting gotcha the harness ran into repeatedly: a plain
@@ -1071,8 +421,8 @@ bundled Python and this avoids needing to maintain that.
   refit determinism/shape-key/base-mesh checks, and the registration
   smoke test.
 - `tests/perf.py` — **opt-in only, not run by `run_tests.py`.**
-  33k-vertex-garment / 65k-triangle-body scale timing, matching section
-  7's own repro scale. Run explicitly (`blender --background
+  33k-vertex-garment / 65k-triangle-body scale timing, matching
+  DECISIONS.md §2's own repro scale. Run explicitly (`blender --background
   --factory-startup --python tests/perf.py`) when re-validating a
   performance claim before it goes into this document.
 
@@ -1097,13 +447,14 @@ re-derives against a *different*, target body rather than reconstructing
 the bind-time source position) and existed purely to make the round-trip
 verifiable. It has moved to `tests/test_binding.py` accordingly.
 
-**Standing rule:** every quantitative claim added to this document from
-now on must ship with a checked-in script (a test under `tests/`, or
-`tests/perf.py` for a timing figure) that reproduces it. Section 7's
-0.58% shrinkage, ~4.73s/~0.25s timings, 46%/1.46x overshoot figure, and
-the 0.70-0.91x/etc. pin-blend table all came from scripts that were
-never checked in, and whose sessions are gone — that's what this rule
-exists to prevent happening again. Where this card could reproduce one
+**Standing rule:** every quantitative claim added to this document or to
+`DECISIONS.md` from now on must ship with a checked-in script (a test
+under `tests/`, or `tests/perf.py` for a timing figure) that reproduces
+it. The 0.58% shrinkage, ~4.73s/~0.25s timings, 46%/1.46x overshoot
+figure, and the 0.70-0.91x/etc. pin-blend table now recorded in
+`DECISIONS.md` all came from scripts that were never checked in, and
+whose sessions are gone — that's what this rule exists to prevent
+happening again. Where this card could reproduce one
 of those figures with a fresh, checked-in test, it did (tube shrinkage,
 tunneling, Mode B round-trip); where a figure was itself a seeded
 adversarial sweep whose exact original script/parameters were never
