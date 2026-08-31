@@ -358,7 +358,7 @@ def main():
             if bind_result != {'FINISHED'}:
                 raise RuntimeError(f"bind failed for {display_name}: {bind_result}")
 
-            projection = solver.project_garment(garment, target_ctx, depsgraph, OFFSET_SCALE)
+            projection = solver.project_garment(garment, target_ctx, OFFSET_SCALE)
             raw_positions = projection.fitted_positions
 
             before_count = _count_penetrating(raw_positions, target_bvh)

@@ -18,16 +18,24 @@ construction (``core.geometry.local_frame``), reused here so both are
 built the exact same deterministic way.
 
 Mode B (cross-topology): resolved per an Architect consult on this card
-(Bear PR Process board, card 7601dd7f-8c5d-4484-96f7-4be9cfe6cef3).
-``triangle_index``/``barycentric`` are indices into the SOURCE body's
-own triangulation (see ``binding.bind_mode_b``) and have no meaning
-against a different-topology target body's unrelated triangle list, so
-they cannot be looked up directly against the target. Instead:
+(Bear PR Process board, card 7601dd7f-8c5d-4484-96f7-4be9cfe6cef3), then
+reworked by the bind-time-freeze card (Part A) to close the fragility
+that resolution left open. ``triangle_index``/``barycentric`` are
+indices into the SOURCE body's own triangulation (see
+``binding.bind_mode_b``) and have no meaning against a
+different-topology target body's unrelated triangle list, so they cannot
+be looked up directly against the target — but they are also no longer
+how the bind-time anchor is obtained at all (see below), so this is now
+a moot point rather than something the fit-time solver has to work
+around. Fit time now works as:
 
-  1. Reconstruct the bind-time anchor point on the SOURCE body only
-     (``triangle_index``/``barycentric`` against the source body's own
-     triangulation — stable, since source body geometry doesn't change
-     between bind and fit).
+  1. Read the FROZEN bind-time anchor stored directly on the garment,
+     in the source body's own local object space
+     (``storage.ATTR_SOURCE_ANCHOR_LOCAL``), and multiply it back out to
+     world space by the source body's ``matrix_world`` AT BIND TIME
+     (``storage.PROP_SOURCE_BIND_MATRIX``, likewise frozen). No source
+     body object lookup, no source body mesh evaluation, at fit time —
+     the source body does not need to still exist in the scene at all.
   2. Find the nearest-surface point to that anchor on the TARGET body's
      BVH — this is the literal "re-evaluated against the target body's
      BVH at fit time" from ARCHITECTURE.md section 2.
@@ -36,13 +44,16 @@ they cannot be looked up directly against the target. Instead:
      built the same deterministic way bind time does
      (``core.geometry.triangle_frame``).
 
-This requires the source body object to still exist in the scene
-(looked up by name via ``storage.PROP_SOURCE_BODY_NAME``) to serve as
-the stable reference for step 1. Per the Architect: acceptable for v1
-given the current schema, but fragile (a renamed/deleted source body, or
-one edited after bind, silently breaks fitting) — flagged as a follow-up
-card (persist the anchor in the source body's own local object space at
-bind time instead) rather than blocking this one.
+Before Part A, step 1 instead reconstructed the anchor by re-evaluating
+the SOURCE body's mesh at fit time via ``triangle_index``/``barycentric``
+— which meant a renamed/deleted source body broke fitting outright, and
+an edited/reshaped source body silently changed the fitted result with
+no warning (ARCHITECTURE.md section 7, card 089ab86f-4247-42c4-9652-
+9d30de33fbdf). Storing the already-computed world-space anchor directly
+(frozen, in the source body's own local space) instead of re-deriving it
+removes that whole class of failure: ``_resolve_source_body`` and its
+error path no longer exist because there is nothing left in this module
+that needs to resolve the source body object at all.
 
 Both modes also compute, per garment vertex, the point on the TARGET
 body's surface the stored offset is actually applied from (Mode A:
@@ -65,15 +76,13 @@ evaluated/triangulated/built exactly once per fit and shared with
 ``core.collision``'s two passes, instead of being rebuilt independently
 here (Bear PR Process card cd0d1569-36ad-4d79-a82b-6d1115a0bcda; see
 ``core.geometry.TargetContext``'s docstring and
-``core.pipeline.fit_once``, the sole place that builds one). Mode B
-additionally takes ``depsgraph`` directly, since it still needs to
-evaluate the SOURCE body (a different object from the target, not part
-of ``TargetContext``) to reconstruct the bind-time anchor.
+``core.pipeline.fit_once``, the sole place that builds one). Neither
+function takes a ``depsgraph`` any more (Part A removed Mode B's only
+use of one — evaluating the source body — so ``project_garment`` no
+longer accepts or threads one through either).
 """
 
 from dataclasses import dataclass
-
-import bpy
 
 from . import geometry, storage
 
@@ -98,30 +107,22 @@ class ProjectionResult:
     anchor_normals: list
 
 
-def _resolve_source_body(binding_info):
-    """Look up the Mode B binding's source body object by its stored name.
-
-    Raises ``ValueError`` (rather than silently producing a garbage fit)
-    if the source body is missing or no longer a mesh — see the module
-    docstring's note on this being a known v1 limitation.
-    """
-    name = binding_info.get("source_body_name")
-    obj = bpy.data.objects.get(name) if name else None
-    if obj is None or obj.type != 'MESH':
-        raise ValueError(
-            f"Mode B binding's source body '{name}' was not found in the "
-            "scene (renamed or deleted?). It is required at fit time to "
-            "reconstruct the bind-time reference point — re-bind against "
-            "a source body that still exists to fix this."
-        )
-    return obj
-
-
 def project_mode_a(garment_obj, target_ctx, offset_scale=1.0):
     """Re-evaluate a Mode A binding against ``target_ctx``.
 
     ``target_ctx`` is a :class:`core.geometry.TargetContext` built once
     per fit (see module docstring). Returns a :class:`ProjectionResult`.
+
+    Part C (bind-time-freeze card): refuses outright, before touching any
+    per-vertex index, if ``target_ctx``'s vertex count doesn't match the
+    source body's vertex count AT BIND TIME
+    (``info["source_vertex_count"]``, ``storage.PROP_SOURCE_VERTEX_COUNT``).
+    This closes the "Mode A no-target trap": a binding built with no
+    Target Body set (so nothing to compare topology against) previously
+    passed silently as long as the eventual target body had at least as
+    many vertices as the source body, since the old guard below only ever
+    caught an out-of-range index (a target with FEWER vertices) — never a
+    same-or-larger target with completely different topology.
     """
     info = storage.read_mode_a_binding(garment_obj)
     if info is None:
@@ -129,13 +130,24 @@ def project_mode_a(garment_obj, target_ctx, offset_scale=1.0):
 
     target_positions = target_ctx.positions
     target_normals = target_ctx.normals
+    target_vertex_count = len(target_positions)
+
+    source_vertex_count = info.get("source_vertex_count")
+    if source_vertex_count is not None and source_vertex_count != target_vertex_count:
+        raise ValueError(
+            f"'{garment_obj.name}' was bound (Mode A) against a source "
+            f"body with {source_vertex_count} vertices, but target body "
+            f"'{target_ctx.name}' has {target_vertex_count} — Mode A "
+            "requires the target body to share the source body's exact "
+            "topology (same vertex count/order). Re-bind with the "
+            "correct Target Body set, or use Mode B instead."
+        )
 
     body_vertex_index = info["body_vertex_index"]
     normal_offset = info["normal_offset"]
     tangent_offset = info["tangent_offset"]
     bitangent_offset = info["bitangent_offset"]
 
-    target_vertex_count = len(target_positions)
     fitted = []
     anchor_positions = []
     anchor_normals = []
@@ -166,62 +178,48 @@ def project_mode_a(garment_obj, target_ctx, offset_scale=1.0):
     )
 
 
-def project_mode_b(garment_obj, target_ctx, depsgraph, offset_scale=1.0):
+def project_mode_b(garment_obj, target_ctx, offset_scale=1.0):
     """Re-evaluate a Mode B binding against ``target_ctx``.
 
     See the module docstring for the algorithm. ``target_ctx`` is a
-    :class:`core.geometry.TargetContext` built once per fit; ``depsgraph``
-    is used to separately evaluate the SOURCE body (not part of
-    ``target_ctx``) to reconstruct the bind-time anchor. Returns a
+    :class:`core.geometry.TargetContext` built once per fit. Returns a
     :class:`ProjectionResult`.
+
+    Part A (bind-time freeze): the bind-time anchor comes from
+    ``info["source_bind_matrix"] @ info["source_anchor_local"][i]`` —
+    both frozen at bind time (``core.binding.bind_mode_b``) — not from
+    re-deriving it against the source body's current mesh via
+    ``triangle_index``/``barycentric``. No source body object is looked
+    up, and no source body mesh is evaluated, here at all: a
+    renamed/deleted/edited source body has no effect on this function.
     """
     info = storage.read_mode_b_binding(garment_obj)
     if info is None:
         raise ValueError(f"'{garment_obj.name}' has no Mode B binding to fit.")
 
-    source_body_obj = _resolve_source_body(info)
-
-    source_positions, source_triangles = geometry.world_space_triangles(
-        source_body_obj, depsgraph
-    )
-    if not source_positions or not source_triangles:
+    source_bind_matrix = info["source_bind_matrix"]
+    source_anchor_local = info["source_anchor_local"]
+    if source_bind_matrix is None:
         raise ValueError(
-            f"Source body '{source_body_obj.name}' has no triangulatable faces."
+            f"'{garment_obj.name}' has a Mode B binding with no stored "
+            "bind-time source-body reference — re-bind to fix this."
         )
 
     target_positions = target_ctx.positions
     target_triangles = target_ctx.triangles
     target_bvh = target_ctx.bvh
 
-    triangle_index = info["triangle_index"]
-    barycentric = info["barycentric"]
     normal_offset = info["normal_offset"]
     tangent_offset_2d = info["tangent_offset_2d"]
 
-    source_triangle_count = len(source_triangles)
     fitted = []
     anchor_positions = []
     anchor_normals = []
-    for i, tri_idx in enumerate(triangle_index):
-        if tri_idx >= source_triangle_count:
-            raise ValueError(
-                f"Mode B binding references source-body triangle {tri_idx}, "
-                f"but '{source_body_obj.name}' only has "
-                f"{source_triangle_count} triangles now — has its mesh "
-                "changed since bind?"
-            )
-
-        tri = source_triangles[tri_idx]
-        a, b, c = (
-            source_positions[tri[0]],
-            source_positions[tri[1]],
-            source_positions[tri[2]],
-        )
-        u, v, w = barycentric[i]
-        source_anchor = a * u + b * v + c * w
+    for i, local_anchor in enumerate(source_anchor_local):
+        world_anchor = source_bind_matrix @ local_anchor
 
         hit_location, _hit_normal, hit_tri_index, _hit_distance = target_bvh.find_nearest(
-            source_anchor
+            world_anchor
         )
         if hit_tri_index is None:
             raise ValueError(
@@ -254,24 +252,30 @@ def project_mode_b(garment_obj, target_ctx, depsgraph, offset_scale=1.0):
     )
 
 
-def project_garment(garment_obj, target_ctx, depsgraph, offset_scale=1.0):
+def project_garment(garment_obj, target_ctx, offset_scale=1.0):
     """Re-evaluate ``garment_obj``'s stored binding against ``target_ctx``.
 
     Dispatches to :func:`project_mode_a` or :func:`project_mode_b` based
     on the garment's stored bind mode (``storage.PROP_BIND_MODE``).
     ``target_ctx`` is a :class:`core.geometry.TargetContext` built once
-    per fit (see module docstring); ``depsgraph`` is only used if
-    dispatching to Mode B (to evaluate the source body). Returns a
-    :class:`ProjectionResult` — ready for ``core.pipeline.fit_once`` to
-    pass to ``core.collision.resolve_collisions`` and, ultimately, for
+    per fit (see module docstring). Returns a :class:`ProjectionResult` —
+    ready for ``core.pipeline.fit_once`` to pass to
+    ``core.collision.resolve_collisions`` and, ultimately, for
     ``operators/op_fit.py`` to convert to the garment's local space for
     the Shape Key bake.
+
+    No longer takes a ``depsgraph`` (Part A, bind-time-freeze card):
+    neither projection mode reads any object's mesh at fit time anymore
+    — Mode A only needs ``target_ctx`` (built once, up front, by
+    ``core.pipeline.fit_once``), and Mode B's former need to
+    separately evaluate the source body is gone along with the
+    live-source-mesh read it existed to support.
     """
     mode = garment_obj.get(storage.PROP_BIND_MODE)
     if mode == storage.MODE_A:
         return project_mode_a(garment_obj, target_ctx, offset_scale)
     elif mode == storage.MODE_B:
-        return project_mode_b(garment_obj, target_ctx, depsgraph, offset_scale)
+        return project_mode_b(garment_obj, target_ctx, offset_scale)
     else:
         raise ValueError(
             f"'{garment_obj.name}' is not bound (or has an unrecognized "
