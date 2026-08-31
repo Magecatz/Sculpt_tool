@@ -36,7 +36,6 @@ Mode B's projection and both collision passes) is threaded through
 
 from dataclasses import dataclass
 
-import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
@@ -186,17 +185,27 @@ def world_space_triangles(obj, depsgraph):
     ``depsgraph`` is a resolved ``bpy.types.Depsgraph`` -- see module
     docstring and :func:`world_space_positions_and_normals`.
 
-    ``triangle_vertex_indices`` IS vectorized with NumPy (Bear PR Process
-    card 1f564161-82f9-4d5d-bd63-665d98790e8a): a single bulk
+    ``triangle_vertex_indices`` was tried, vectorized, as part of Bear PR
+    Process card 1f564161-82f9-4d5d-bd63-665d98790e8a: a single bulk
     ``mesh.loop_triangles.foreach_get("vertices", ...)`` read plus a
     reshape, replacing the per-triangle ``[tuple(lt.vertices) for lt in
-    mesh.loop_triangles]`` Python loop. This is integer vertex-index
-    data with no floating-point arithmetic anywhere in the path, so it
-    is exactly (not just numerically-close) equivalent to the loop it
-    replaces -- unlike the position half, which is NOT vectorized; see
-    :func:`world_space_positions_and_normals`'s docstring for why (the
-    same ``matrix @ v.co`` reduction, with the same measured 1-ULP risk,
-    computes ``vertex_positions`` here too).
+    mesh.loop_triangles]`` Python loop below. Unlike the position half
+    (see :func:`world_space_positions_and_normals`'s docstring), this one
+    IS exactly -- not just numerically-close -- equivalent to the loop it
+    would replace: integer vertex-index data, no floating-point
+    arithmetic anywhere in the path. It was reverted anyway, for the same
+    reason ``core/smoothing.py``'s ``_laplacian_step`` was: measured, not
+    assumed, performance. Benchmarked against the unvectorized loop below
+    at both this project's real Test_Items body (23,153 verts / ~44k
+    triangles) and ``tests/perf.py``'s larger synthetic scale (65,160
+    triangles), the "vectorized" version was a statistical wash at best
+    (within ~10% either way across repeated runs) and slightly SLOWER
+    more often than not -- the ``[tuple(t) for t in flat.reshape(-1,
+    3).tolist()]`` step needed to hand back the same list-of-int-tuples
+    shape callers (``BVHTree.FromPolygons``, per-triangle vertex-index
+    lookups elsewhere in ``core/``) rely on costs about as much
+    Python-level work as the loop it replaces. See the card's PR for the
+    full numbers.
     """
     eval_obj = obj.evaluated_get(depsgraph)
     mesh = eval_obj.to_mesh()
@@ -204,11 +213,7 @@ def world_space_triangles(obj, depsgraph):
 
     matrix = obj.matrix_world
     positions = [matrix @ v.co for v in mesh.vertices]
-
-    triangle_count = len(mesh.loop_triangles)
-    triangle_flat = np.empty(triangle_count * 3, dtype=np.int64)
-    mesh.loop_triangles.foreach_get("vertices", triangle_flat)
-    triangles = [tuple(tri) for tri in triangle_flat.reshape(-1, 3).tolist()]
+    triangles = [tuple(lt.vertices) for lt in mesh.loop_triangles]
 
     eval_obj.to_mesh_clear()
     return positions, triangles
