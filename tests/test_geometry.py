@@ -73,6 +73,44 @@ class TargetContextBuildTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             geometry.TargetContext.build(empty, depsgraph)
 
+    def test_faceless_body_build_succeeds_but_triangles_and_bvh_raise_lazily(self):
+        """Regression test for Bear PR Process card
+        e6763cc5-d3cf-4021-8541-f5e5dd4a23aa: a target body with vertices
+        but zero faces (e.g. a loose-vertex mesh, or one with all its
+        faces stripped) must NOT fail at ``build()`` time -- pre-refactor,
+        ``core.solver.project_mode_a`` only ever required target
+        vertices, never touched triangles/BVH, and this exact case
+        succeeded. ``build()`` deferring the "no triangulatable faces"
+        check to first access of ``.triangles``/``.bvh`` is what restores
+        that: Mode A (which never accesses either) still works, while
+        anything that genuinely needs the surface (Mode B, collision
+        resolution) still gets the same ValueError as before, just at
+        first access instead of unconditionally at build time."""
+        body = common.make_grid("Body", x_segments=2, y_segments=2, size=2.0)
+        bm = bmesh.new()
+        bm.from_mesh(body.data)
+        bmesh.ops.delete(bm, geom=list(bm.faces), context='FACES_ONLY')
+        bm.to_mesh(body.data)
+        bm.free()
+        body.data.update()
+        self.assertGreater(len(body.data.vertices), 0)
+        self.assertEqual(len(body.data.polygons), 0)
+
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+
+        # build() itself must not raise -- Mode A's own needs
+        # (positions/normals) are unaffected by the missing faces.
+        ctx = geometry.TargetContext.build(body, depsgraph)
+        self.assertEqual(len(ctx.positions), len(body.data.vertices))
+        self.assertEqual(len(ctx.normals), len(body.data.vertices))
+
+        # Mode B / collision resolution genuinely need the surface --
+        # they must still get the same error, just deferred to access.
+        with self.assertRaises(ValueError):
+            ctx.triangles
+        with self.assertRaises(ValueError):
+            ctx.bvh
+
 
 if __name__ == "__main__":
     unittest.main()

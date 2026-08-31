@@ -10,6 +10,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
 
+import bmesh  # noqa: E402
 import bpy  # noqa: E402
 
 import sculpt_tool  # noqa: E402
@@ -287,6 +288,209 @@ class ModeBFitOnceTest(unittest.TestCase):
 
         baked = common.set_shape_key_active_positions(garment, "Fitted")
         self.assertEqual(len(baked), len(garment.data.vertices))
+
+
+def _strip_faces(obj):
+    """Delete every face from ``obj``'s mesh in place, keeping its
+    vertices/edges -- produces a "faceless-but-vertexed" body. Calls
+    ``common.update_scene()`` (see its docstring) so a depsgraph handle
+    already captured before this call -- as ``_make_bound_scene()``'s is,
+    since binding needs it too -- still evaluates the stripped mesh
+    rather than a stale, still-faced one."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bmesh.ops.delete(bm, geom=list(bm.faces), context='FACES_ONLY')
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+    common.update_scene()
+
+
+class ModeAFacelessTargetTest(unittest.TestCase):
+    """Regression test for Bear PR Process card
+    e6763cc5-d3cf-4021-8541-f5e5dd4a23aa: ``fit_once`` unconditionally
+    built a ``TargetContext`` (raising "no triangulatable faces") before
+    dispatching to ``project_mode_a``/``project_mode_b``, even though
+    Mode A never needs triangles/BVH -- a regression from card
+    cd0d1569's core/geometry.py + core/pipeline.py extraction. Pre-
+    refactor (c0ba906), a Mode A fit with collision resolution disabled
+    against a faceless-but-vertexed target body succeeded; this asserts
+    that's true again. Collision resolution genuinely needs the target's
+    surface (pre-refactor's own ``resolve_collisions`` already required
+    triangles regardless of bind mode), so that combination must still
+    raise -- asserted here too, as a guard against overcorrecting the
+    fix into never checking at all."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._was_registered = hasattr(bpy.types.Object, "sculpt_tool")
+        if not cls._was_registered:
+            sculpt_tool.register()
+
+    @classmethod
+    def tearDownClass(cls):
+        if not cls._was_registered:
+            sculpt_tool.unregister()
+
+    def setUp(self):
+        common.clear_scene()
+
+    def _make_faceless_bound_scene(self):
+        garment, target_body, depsgraph = _make_bound_scene()
+        _strip_faces(target_body)
+        self.assertGreater(len(target_body.data.vertices), 0)
+        self.assertEqual(len(target_body.data.polygons), 0)
+        return garment, target_body, depsgraph
+
+    def test_fit_once_succeeds_against_faceless_target_with_collision_disabled(self):
+        garment, target_body, depsgraph = self._make_faceless_bound_scene()
+
+        params = pipeline.FitParams(
+            offset_scale=1.0,
+            use_collision_resolution=False,
+            collision_margin=0.01,
+            smoothing_iterations=0,
+        )
+
+        fitted = pipeline.fit_once(garment, target_body, params, depsgraph)
+        self.assertEqual(len(fitted), len(garment.data.vertices))
+
+    def test_fit_once_still_raises_against_faceless_target_with_collision_enabled(self):
+        garment, target_body, depsgraph = self._make_faceless_bound_scene()
+
+        params = pipeline.FitParams(
+            offset_scale=1.0,
+            use_collision_resolution=True,
+            collision_margin=0.01,
+            smoothing_iterations=0,
+        )
+
+        with self.assertRaises(ValueError):
+            pipeline.fit_once(garment, target_body, params, depsgraph)
+
+    def test_bind_and_fit_operator_finishes_against_faceless_target(self):
+        """End-to-end version of the card's own bisection repro: bind +
+        fit through the real operators, collision resolution off, target
+        body with all its faces deleted -- must return {'FINISHED'},
+        matching pre-refactor (c0ba906) behavior exactly."""
+        source_body = common.make_grid("SourceBody", x_segments=4, y_segments=4, size=2.0)
+        target_body = common.make_grid("TargetBody", x_segments=4, y_segments=4, size=2.0)
+        for v in target_body.data.vertices:
+            v.co.z += 0.3
+        target_body.data.update()
+        _strip_faces(target_body)
+        self.assertEqual(len(target_body.data.polygons), 0)
+
+        garment = common.make_grid("Garment", x_segments=3, y_segments=3, size=1.2)
+        garment.location = (0.0, 0.0, 0.5)
+
+        settings = garment.sculpt_tool
+        settings.source_body = source_body
+        settings.target_body = target_body
+        settings.bind_mode_override = 'MODE_A'
+        settings.offset_scale = 1.0
+        settings.use_collision_resolution = False
+        settings.smoothing_iterations = 0
+
+        bpy.context.view_layer.objects.active = garment
+        garment.select_set(True)
+
+        self.assertEqual(bpy.ops.sculpttool.bind_garment(), {'FINISHED'})
+        self.assertEqual(bpy.ops.sculpttool.fit_garment(), {'FINISHED'})
+
+        baked = common.set_shape_key_active_positions(garment, "Fitted")
+        self.assertEqual(len(baked), len(garment.data.vertices))
+
+
+class ModeBFacelessTargetTest(unittest.TestCase):
+    """Companion regression coverage for Bear PR Process card
+    e6763cc5-d3cf-4021-8541-f5e5dd4a23aa, closing a gap
+    ``ModeAFacelessTargetTest`` leaves open: that class only exercises
+    Mode A (with collision resolution on/off) against a faceless target.
+    Mode B's OWN nearest-surface projection needs the target body's
+    triangles/BVH unconditionally, regardless of collision resolution --
+    unlike Mode A, which only needs them when collision resolution is on.
+    Asserts the lazy ``TargetContext.triangles``/``.bvh`` fix does not
+    accidentally weaken that: a Mode B fit against a faceless-but-
+    vertexed target must still raise the same "no triangulatable faces"
+    ``ValueError`` it always did, with collision resolution OFF (so
+    there's no risk of the raise coming from ``resolve_collisions``
+    instead of from ``project_mode_b`` itself)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._was_registered = hasattr(bpy.types.Object, "sculpt_tool")
+        if not cls._was_registered:
+            sculpt_tool.register()
+
+    @classmethod
+    def tearDownClass(cls):
+        if not cls._was_registered:
+            sculpt_tool.unregister()
+
+    def setUp(self):
+        common.clear_scene()
+
+    def test_fit_once_raises_against_faceless_target_even_with_collision_disabled(self):
+        # Different vertex counts -> detect_bind_mode picks Mode B.
+        source_body = common.make_grid("SourceBody", x_segments=4, y_segments=4, size=2.0)
+        target_body = common.make_grid("TargetBody", x_segments=6, y_segments=6, size=2.2)
+        for v in target_body.data.vertices:
+            v.co.z += 0.2
+        target_body.data.update()
+        _strip_faces(target_body)
+        self.assertGreater(len(target_body.data.vertices), 0)
+        self.assertEqual(len(target_body.data.polygons), 0)
+
+        garment = common.make_grid("Garment", x_segments=3, y_segments=3, size=1.2)
+        garment.location = (0.0, 0.0, 0.4)
+
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        result = binding.bind_mode_b(garment, source_body, depsgraph)
+        storage.write_mode_b_binding(garment, source_body, result)
+        self.assertEqual(garment.get(storage.PROP_BIND_MODE), storage.MODE_B)
+
+        params = pipeline.FitParams(
+            offset_scale=1.0,
+            use_collision_resolution=False,
+            collision_margin=0.02,
+            smoothing_iterations=0,
+        )
+
+        with self.assertRaises(ValueError):
+            pipeline.fit_once(garment, target_body, params, depsgraph)
+
+    def test_bind_and_fit_operator_cancels_for_mode_b_against_faceless_target(self):
+        source_body = common.make_grid("SourceBody", x_segments=4, y_segments=4, size=2.0)
+        target_body = common.make_grid("TargetBody", x_segments=6, y_segments=6, size=2.2)
+        for v in target_body.data.vertices:
+            v.co.z += 0.2
+        target_body.data.update()
+        _strip_faces(target_body)
+        self.assertEqual(len(target_body.data.polygons), 0)
+
+        garment = common.make_grid("Garment", x_segments=3, y_segments=3, size=1.2)
+        garment.location = (0.0, 0.0, 0.4)
+
+        settings = garment.sculpt_tool
+        settings.source_body = source_body
+        settings.target_body = target_body
+        settings.bind_mode_override = 'MODE_B'
+        settings.offset_scale = 1.0
+        settings.use_collision_resolution = False
+        settings.smoothing_iterations = 0
+
+        bpy.context.view_layer.objects.active = garment
+        garment.select_set(True)
+
+        self.assertEqual(bpy.ops.sculpttool.bind_garment(), {'FINISHED'})
+        # bpy.ops raises RuntimeError (not a plain {'CANCELLED'} return)
+        # when a REGISTER operator reports an ERROR and cancels -- see
+        # test_binding_freeze.py's test_bind_with_no_target_body_refuses
+        # for the same convention.
+        with self.assertRaises(RuntimeError) as ctx:
+            bpy.ops.sculpttool.fit_garment()
+        self.assertIn("no triangulatable faces", str(ctx.exception))
 
 
 if __name__ == "__main__":
