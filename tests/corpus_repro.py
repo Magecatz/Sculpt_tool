@@ -105,9 +105,20 @@ FAILING_GARMENTS = [
     ("Cyber Bunny Outfit by Yukina - E-girl.fbx", "Hood Crop", "Hood Crop", 8276),
 ]
 
-# The other 13 (of the card's full 22-mesh corpus) that already reached
-# exactly 0 residual pre-fix -- included as a no-regression check, not
-# part of the card's own failing-9 table.
+# The other 13 (of the card's full 22-mesh corpus) that were not on the
+# failing-9 list above pre-fix -- NOT uniformly 0, despite an earlier
+# version of ARCHITECTURE.md sect. 7 claiming so. A run against the real
+# Test_Items/ corpus (see this card's write-up) saw old-algo-after
+# residuals of: Body tape 0, tech Belt 0, panties 0, Summer Set 52,
+# pasties 0, Legg Strap 0, Earrings 0, Top 0, bra 0, bodysuit 114,
+# Tech Harness 8, Tech Pants 60, Tech top 28 -- only 8 of the 13 actually
+# reached exactly 0, and 3 of the 5 nonzero ones (Summer Set, bodysuit,
+# Tech Pants) are individually above the 50-vertex mark that separated
+# this table from FAILING_GARMENTS in the first place. These numbers are
+# illustrative only, from one run, and can drift if the corpus changes --
+# re-run this script for the current, regenerable numbers (printed in
+# the "old_after" column). Included as a no-regression check (new_after
+# <= old_after for each), not part of the card's own failing-9 table.
 CLEAN_GARMENTS = [
     ("E-girl.fbx", "Body tape.001", "Body tape", 580),
     ("E-girl.fbx", "tech Belt .001", "tech Belt", 2435),

@@ -507,7 +507,16 @@ passes instead of being rebuilt redundantly.
   9 of 22 ended with 50+ vertices still penetrating the body after fit,
   concentrated in concave/self-occluding regions (straps, hoods, layered
   pieces, armpit/crotch folds); the other 13 (simple, mostly-convex
-  garments) already reached exactly 0. Root cause: `resolve_collisions()`
+  garments) were the ones that measurement did not put on that
+  failing-9 list -- **not** uniformly zero, as an earlier, unverified
+  version of this section claimed. Most of the 13 do sit at or near 0,
+  but a few sit well above it, including above the 50-vertex mark
+  itself, so "under the failing threshold" describes how they were
+  originally classified, not a guarantee about their individual
+  residual counts. Exact pre-fix residuals for all 13 are reproducible
+  via `tests/corpus_repro.py`'s `CLEAN_GARMENTS` table and its own
+  printed output rather than restated here as fixed numbers, since they
+  can drift if the corpus changes. Root cause: `resolve_collisions()`
   decided a push-out *direction* from the locally-nearest triangle's own
   face normal, which in a concave pocket can belong to a different fold
   of the surface than the one the vertex is actually meant to clear, and
