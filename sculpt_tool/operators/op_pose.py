@@ -1,16 +1,20 @@
-"""OT_pose_to_target -- the pose-transfer stage (roadmap R3).
+"""OT_pose_to_target -- the placement stage (roadmap R3 pose, R7 placement).
 
-Poses the garment's own armature to match the Target Base Rig's pose, via
-the R2 canonical bone map, so the garment (deformed through its own skin
-weights by its Armature modifier) is grossly placed onto the target base
-before Fit runs -- the missing Stage 1 (see ``core.pose`` and DECISIONS.md
-section 6f). This operator is setup + apply: it resolves the rigs and bone
-map, calls ``core.pose.compute_pose_rotations`` (pure), and writes the
-result onto the garment armature's pose bones.
+Places the garment's own armature onto the Target Base Rig via the R2
+canonical bone map, so the garment (deformed through its own skin weights
+by its Armature modifier) is grossly placed onto the target base before Fit
+runs -- the missing Stage 1 (see ``core.pose`` and DECISIONS.md section
+6f). As of R7 this is a full PLACEMENT -- position + rotation + length-scale
+per bone (``core.pose.compute_bone_placements`` via
+:func:`place_garment_onto_rig`) -- so each clothing region is moved and
+sized to the target base, not just rotated. The rotation-only transfer
+(:func:`pose_garment_onto_rig`, ``core.pose.compute_pose_rotations``) is
+retained for the Fit/Batch stage-0 integration until R8 switches it over.
 
-A later card (R5) calls this automatically as the first step of Bind/Fit/
-Batch; here it's a standalone "Pose to Target Base" button so the stage can
-be run and inspected on its own.
+This operator is setup + apply: it resolves the rigs and bone map, calls
+the pure ``core.pose`` computation, and writes the result onto the garment
+armature's pose bones. The standalone "Place onto Target Base" button lets
+the stage be run and inspected on its own.
 """
 
 import bpy
@@ -35,10 +39,11 @@ def reset_pose(armature_obj):
 
 
 def pose_garment_onto_rig(context, garment_arm, target_arm, overrides=()):
-    """Pose ``garment_arm`` onto ``target_arm``'s current pose via the R2
-    canonical bone map, resetting to rest first. Returns the number of
-    bones posed (0 if no shared bones resolve). Shared by the standalone
-    Pose operator and the Fit/Batch stage-0 integration (roadmap R5)."""
+    """Rotation-only pose transfer (roadmap R3/R5). Poses ``garment_arm`` to
+    match ``target_arm``'s pose via the R2 bone map, resetting to rest
+    first. Returns the number of bones posed. Retained for the Fit/Batch
+    stage-0 integration until R8 switches it to full placement; see
+    :func:`place_garment_onto_rig`."""
     bone_map = rig_map.build_bone_map(
         rig.bone_names(garment_arm), rig.bone_names(target_arm), overrides=overrides
     )
@@ -57,13 +62,51 @@ def pose_garment_onto_rig(context, garment_arm, target_arm, overrides=()):
     return posed
 
 
+def place_garment_onto_rig(context, garment_arm, target_arm, overrides=()):
+    """Full PLACEMENT (position + rotation + length-scale) of ``garment_arm``
+    onto ``target_arm`` via the R2 bone map (roadmap R7).
+
+    Resets the garment armature to rest, then for each mapped bone (parent-
+    first) sets its pose so it coincides with the target base bone's world
+    position, orientation, and length -- moving and scaling each clothing
+    region to the target base, not just rotating it. A depsgraph update
+    between bones lets each child be placed relative to its already-placed
+    parent. Returns the number of bones placed."""
+    bone_map = rig_map.build_bone_map(
+        rig.bone_names(garment_arm), rig.bone_names(target_arm), overrides=overrides
+    )
+    placements = pose.compute_bone_placements(garment_arm, target_arm, bone_map.as_pairs())
+
+    reset_pose(garment_arm)
+    context.view_layer.update()
+    armature_world_inv = garment_arm.matrix_world.inverted()
+    placed = 0
+    for bone_name, world_rigid, length_scale in placements:
+        pose_bone = garment_arm.pose.bones.get(bone_name)
+        if pose_bone is None:
+            continue
+        # Each placed bone is sized to its OWN target length; disable scale
+        # inheritance so a chain (upper arm -> forearm -> hand) doesn't
+        # compound its ancestors' stretches.
+        pose_bone.bone.inherit_scale = 'NONE'
+        # Position + orientation (orthonormal) via matrix, then the along-
+        # bone (Y) length stretch via an explicit scale -- kept separate so
+        # the matrix stays clean (see core.pose.compute_bone_placements).
+        pose_bone.matrix = armature_world_inv @ world_rigid
+        pose_bone.scale = (1.0, length_scale, 1.0)
+        context.view_layer.update()  # so children place against the placed parent
+        placed += 1
+    return placed
+
+
 class SCULPTTOOL_OT_pose_to_target(bpy.types.Operator):
     bl_idname = "sculpttool.pose_to_target"
-    bl_label = "Pose to Target Base"
+    bl_label = "Place onto Target Base"
     bl_description = (
-        "Pose the garment's armature to match the Target Base Rig (via the "
-        "canonical bone map), so the garment follows the target base's limbs "
-        "before fitting. Run Fit afterwards to conform the surface"
+        "Place the garment's armature onto the Target Base Rig (via the "
+        "canonical bone map): move, rotate, and scale each clothing region "
+        "to the matching part of the target base, so the garment sits at the "
+        "right height and size. Run Fit afterwards to conform the surface"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -99,18 +142,19 @@ class SCULPTTOOL_OT_pose_to_target(bpy.types.Operator):
             for o in getattr(settings, "bone_map_overrides", ())
             if o.source_bone
         ]
-        posed = pose_garment_onto_rig(context, garment_arm, target_arm, overrides)
-        if not posed:
+        placed = place_garment_onto_rig(context, garment_arm, target_arm, overrides)
+        if not placed:
             self.report(
                 {'WARNING'},
-                "Pose transfer resolved no shared bones to pose -- check the "
-                "bone map (Compute Bone Map).",
+                "Placement resolved no shared bones -- check the bone map "
+                "(Compute Bone Map).",
             )
             return {'CANCELLED'}
 
         self.report(
             {'INFO'},
-            f"Posed '{garment_arm.name}' to '{target_arm.name}' ({posed} bones). "
+            f"Placed '{garment_arm.name}' onto '{target_arm.name}' "
+            f"({placed} bones: position + rotation + scale). "
             "Run Fit to conform the surface.",
         )
         return {'FINISHED'}
