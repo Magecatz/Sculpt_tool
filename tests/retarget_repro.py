@@ -52,7 +52,7 @@ import bpy  # noqa: E402
 from mathutils import Vector  # noqa: E402
 
 import sculpt_tool  # noqa: E402
-from sculpt_tool.core import geometry, rig, rig_map, storage  # noqa: E402
+from sculpt_tool.core import geometry, quality, rig, rig_map, storage  # noqa: E402
 
 SOURCE_FBX = "RP Female Base_Heeled Foot.fbx"
 SOURCE_OBJ = "Body"
@@ -72,6 +72,21 @@ GARMENTS = [
 
 # Lenient ceilings: catch gross regressions, not normal variation.
 MAX_PENETRATION_FRACTION = 0.25
+# Surface-quality gate (fix C): looseness preservation. For garments with a
+# genuinely loose region (open panels, straps standing well off the body),
+# the median fitted/authored standoff of those loose vertices must stay
+# above this floor -- i.e. the fit must NOT shrink-wrap the loose geometry
+# flat onto the body (the pre-B2 failure). Measured Tech Set sweater -> Egirl:
+# ~0.27 before fix B2, ~0.54 after; floor set between them with headroom.
+# Only gated for pieces that actually have >= MIN_LOOSE_VERTS loose vertices
+# (a tight piece has no loose region to preserve, so it's n/a, not a fail).
+MIN_LOOSENESS_PRESERVED = 0.40
+MIN_LOOSE_VERTS = 100
+# Edge-length distortion is REPORTED (Distort% column) as a tracking number
+# but not gated: it's a clean signal for stretch/scatter, but on a loose
+# OPEN garment an over-smoothed collapse can score as low as a clean fit, so
+# it doesn't cleanly separate good from bad there. The looseness floor above
+# and tests/test_placement's twist test are the real fix-A/B2 gates.
 _PARITY_DIR = Vector((1.0, 2.0, 3.0)).normalized()
 
 
@@ -185,7 +200,10 @@ def main():
                 s.bind_mode_override = 'MODE_B'
                 s.target_base_armature = base_rig
                 s.use_collision_resolution = True
-                s.smoothing_iterations = 0
+                # Recommended config: a few smoothing passes relax the
+                # residual reprojection/collision noise the offset-preserving
+                # conform (fix B2) leaves (raw = 0 is measurably rougher).
+                s.smoothing_iterations = 8
                 bpy.context.view_layer.objects.active = garment
                 garment.select_set(True)
                 try:
@@ -194,9 +212,11 @@ def main():
                 except RuntimeError as exc:
                     bind_r, fit_r = "RAISED", str(exc)[:40]
 
-                # 3) usability: on-body + residual penetration.
+                # 3) usability: on-body + residual penetration + surface quality.
                 pen_frac = float("nan")
                 cz_frac = float("nan")
+                dist_frac = float("nan")
+                loose_preserved = None  # None = no loose region to gate
                 on_body = False
                 fitted = _fitted_world(garment) if fit_r == {'FINISHED'} else None
                 if fitted:
@@ -218,14 +238,43 @@ def main():
                     pen = sum(1 for p in sample if _parity_inside(p, bvh))
                     pen_frac = pen / len(sample)
 
+                    # Surface quality (fix C): per-edge length distortion of
+                    # the fitted garment vs its own authored mesh. Reference
+                    # and fitted are both world-space, so the object matrix
+                    # cancels; the median absorbs the placement's overall
+                    # scaling, leaving only LOCAL mangling (twist boundaries,
+                    # scatter, shrink-wrap collapse).
+                    matrix = garment.matrix_world
+                    reference = [matrix @ v.co for v in garment.data.vertices]
+                    edges = [(e.vertices[0], e.vertices[1]) for e in garment.data.edges]
+                    dist_frac = quality.edge_distortion(reference, fitted, edges).distorted_fraction
+
+                    # Looseness preservation (fix B2 gate): loose authored
+                    # vertices must not be collapsed onto the target body.
+                    binding = storage.read_mode_b_binding(garment)
+                    authored = [abs(n) for n in binding["normal_offset"]]
+                    fitted_standoff = []
+                    for p in fitted:
+                        loc, _n, idx, _d = bvh.find_nearest(p)
+                        fitted_standoff.append((p - loc).length if idx is not None else 0.0)
+                    body_diag = (hi - lo).length
+                    loose_preserved = quality.looseness_preservation(
+                        authored, fitted_standoff, loose_fraction_of=body_diag,
+                        min_loose=MIN_LOOSE_VERTS,
+                    )
+
                 height_ok = 0.1 <= cz_frac <= 0.98
+                # Only gate looseness when there IS a loose region (None = n/a).
+                looseness_ok = loose_preserved is None or loose_preserved >= MIN_LOOSENESS_PRESERVED
                 passed = (
                     not gaps and bind_r == {'FINISHED'} and fit_r == {'FINISHED'}
                     and on_body and height_ok and pen_frac <= MAX_PENETRATION_FRACTION
+                    and looseness_ok
                 )
                 ok = ok and passed
                 rows.append((base_label, disp, len(gaps), bind_r == {'FINISHED'},
-                             fit_r == {'FINISHED'}, on_body, cz_frac, pen_frac, passed))
+                             fit_r == {'FINISHED'}, on_body, cz_frac, pen_frac,
+                             dist_frac, loose_preserved, passed))
 
                 bpy.data.objects.remove(garment, do_unlink=True)
                 bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
@@ -238,18 +287,25 @@ def main():
         print("Pipeline: canonical bone map -> pose stage 0 -> Mode B bind/fit/collision, via operators")
         print("=" * 92)
         hdr = (f"{'Base':<22}{'Garment':<10}{'MapGaps':>8}{'Bind':>6}{'Fit':>5}"
-               f"{'OnBody':>8}{'HeightF':>9}{'Penet%':>8}{'':>4}")
+               f"{'OnBody':>8}{'HeightF':>9}{'Penet%':>8}{'Distort%':>9}{'Loose':>7}{'':>4}")
         print(hdr)
         print("-" * len(hdr))
-        for base_label, disp, gaps, bind_ok, fit_ok, on_body, cz_frac, pen_frac, passed in rows:
+        for (base_label, disp, gaps, bind_ok, fit_ok, on_body,
+             cz_frac, pen_frac, dist_frac, loose_preserved, passed) in rows:
             pen = "n/a" if pen_frac != pen_frac else f"{pen_frac*100:.1f}"
             czf = "n/a" if cz_frac != cz_frac else f"{cz_frac:.2f}"
+            dst = "n/a" if dist_frac != dist_frac else f"{dist_frac*100:.1f}"
+            lse = "n/a" if loose_preserved is None else f"{loose_preserved:.2f}"
             print(f"{base_label:<22}{disp:<10}{gaps:>8}{('Y' if bind_ok else 'N'):>6}"
                   f"{('Y' if fit_ok else 'N'):>5}{('Y' if on_body else 'N'):>8}{czf:>9}{pen:>8}"
-                  f"{('  OK' if passed else ' XX'):>4}")
+                  f"{dst:>9}{lse:>7}{('  OK' if passed else ' XX'):>4}")
         print("-" * len(hdr))
         print("HeightF = fitted garment centroid height as a fraction of the "
               "target base height (a torso/leg piece should sit mid-body, not at 0).")
+        print("Distort% = fraction of edges distorted >2x the placement scaling "
+              "(tracking only -- see MODULE header, not a gate).")
+        print(f"Loose = median fitted/authored standoff of loose vertices "
+              f"(fix-B2 gate, floor {MIN_LOOSENESS_PRESERVED:.2f}; n/a = no loose region).")
 
         # --- Ground-truth comparison (Example1.blend) --------------------
         _example_comparison(test_items)
@@ -330,7 +386,7 @@ def _example_comparison(test_items):
     s.target_base_armature = rig.deforming_armature(body)
     s.skip_alignment_check = True
     s.use_collision_resolution = True
-    s.smoothing_iterations = 0
+    s.smoothing_iterations = 8
     bpy.context.view_layer.objects.active = garment
     garment.select_set(True)
     try:
