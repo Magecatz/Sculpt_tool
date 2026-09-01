@@ -147,8 +147,9 @@ def offset_group(objects, delta):
     bpy.context.view_layer.update()
 
 
-def add_label(text, location, size=0.12, color=(0.95, 0.95, 0.97)):
-    """A 3D text object standing up in the XZ plane (facing -Y, the camera)."""
+def add_label(text, location, size=0.12, color=(0.95, 0.95, 0.97), face_deg=0.0):
+    """A 3D text object standing up in the XZ plane. ``face_deg`` rotates it
+    about Z so it faces a camera framed at that azimuth (0 = front/-Y)."""
     import math
     curve = bpy.data.curves.new(type="FONT", name="Label")
     curve.body = text
@@ -156,7 +157,7 @@ def add_label(text, location, size=0.12, color=(0.95, 0.95, 0.97)):
     curve.size = size
     obj = bpy.data.objects.new("Label", curve)
     obj.location = location
-    obj.rotation_euler = (math.radians(90), 0, 0)
+    obj.rotation_euler = (math.radians(90), 0, math.radians(face_deg))
     mat = bpy.data.materials.new("LabelMat")
     mat.diffuse_color = (*color, 1.0)
     obj.data.materials.append(mat)
