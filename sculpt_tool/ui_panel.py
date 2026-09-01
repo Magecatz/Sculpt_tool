@@ -143,8 +143,10 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
             override_buttons.operator("sculpttool.bone_override_remove", icon='REMOVE', text="")
 
             # Pose transfer (roadmap R3): pose the garment onto the target
-            # base via the bone map, before fitting.
+            # base via the bone map, before fitting. R5 also runs this
+            # automatically as Fit/Batch stage 0 when auto_pose_transfer is on.
             base_box.operator("sculpttool.pose_to_target", icon='POSE_HLT')
+            base_box.prop(settings, "auto_pose_transfer")
 
         fit_box = layout.box()
         fit_box.label(text="Fit", icon='MOD_SHRINKWRAP')
