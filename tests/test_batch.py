@@ -349,3 +349,80 @@ class BatchFitStructuralInvariantsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@_register_case
+class BatchFitEdgeCasesTest(unittest.TestCase):
+    """Edge cases a Tester verified once during the Batch card's review
+    (card 39ff8348) but never committed: empty / non-mesh-only / mixed
+    Collections, dedup across Collection paths, a linked duplicate getting
+    its own key, and the 63-char Shape-Key-name truncation path."""
+
+    def setUp(self):
+        common.clear_scene()
+
+    def _bound_garment(self):
+        # Garment bound Mode A to a source, plus an EMPTY target Collection.
+        garment, _source, _targets, collection = _make_mode_a_scene(n_targets=0)
+        garment.sculpt_tool.skip_alignment_check = True
+        return garment, collection
+
+    def _fitted_keys(self, garment):
+        return [k for k in garment.data.shape_keys.key_blocks.keys()
+                if k.startswith("Fitted_")] if garment.data.shape_keys else []
+
+    def test_empty_collection_cancels(self):
+        # An error-report operator makes bpy.ops raise RuntimeError rather
+        # than return {'CANCELLED'} (matches test_binding_freeze's pattern).
+        garment, collection = self._bound_garment()
+        with self.assertRaises(RuntimeError):
+            _run_batch(garment, collection)
+
+    def test_only_nonmesh_object_cancels(self):
+        garment, collection = self._bound_garment()
+        collection.objects.link(bpy.data.objects.new("JustAnEmpty", None))
+        with self.assertRaises(RuntimeError):
+            _run_batch(garment, collection)
+
+    def test_mixed_mesh_and_nonmesh_fits_only_mesh(self):
+        garment, collection = self._bound_garment()
+        target = common.make_grid("Target0", x_segments=4, y_segments=4, size=2.0)
+        _move_to_collection(target, collection)
+        light = bpy.data.objects.new("ALight", bpy.data.lights.new("L", 'POINT'))
+        collection.objects.link(light)
+        self.assertEqual(_run_batch(garment, collection), {'FINISHED'})
+        self.assertEqual(self._fitted_keys(garment), ["Fitted_Target0"])
+
+    def test_object_in_two_collection_paths_is_deduped(self):
+        garment, collection = self._bound_garment()
+        target = common.make_grid("Target0", x_segments=4, y_segments=4, size=2.0)
+        _move_to_collection(target, collection)          # directly in it
+        child = bpy.data.collections.new("Nested")
+        collection.children.link(child)
+        child.objects.link(target)                       # AND via a nested child
+        self.assertEqual(_run_batch(garment, collection), {'FINISHED'})
+        self.assertEqual(self._fitted_keys(garment), ["Fitted_Target0"])  # once
+
+    def test_linked_duplicate_gets_its_own_distinguishable_key(self):
+        garment, collection = self._bound_garment()
+        target = common.make_grid("Target0", x_segments=4, y_segments=4, size=2.0)
+        _move_to_collection(target, collection)
+        dup = target.copy()          # linked duplicate (shares mesh data)
+        dup.name = "Target0_dup"
+        dup.location = (0.0, 0.0, 0.35)   # different world pos -> different fit
+        _move_to_collection(dup, collection)
+        common.update_scene()
+        self.assertEqual(_run_batch(garment, collection), {'FINISHED'})
+        keys = garment.data.shape_keys.key_blocks.keys()
+        self.assertIn("Fitted_Target0", keys)
+        self.assertIn("Fitted_Target0_dup", keys)
+
+    def test_overlong_target_name_truncates_shape_key(self):
+        from sculpt_tool.operators import op_batch
+        garment, collection = self._bound_garment()
+        target = common.make_grid("T" * 80, x_segments=4, y_segments=4, size=2.0)
+        _move_to_collection(target, collection)
+        self.assertEqual(_run_batch(garment, collection), {'FINISHED'})
+        expected = op_batch._batch_shape_key_name(target.name)
+        self.assertLessEqual(len(expected), op_batch._MAX_SHAPE_KEY_NAME_LENGTH)
+        self.assertIn(expected, garment.data.shape_keys.key_blocks.keys())
