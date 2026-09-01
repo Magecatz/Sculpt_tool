@@ -51,10 +51,16 @@ right way, but it does not move or resize the garment, so a garment
 authored for one base lands too low / wrongly sized on a base with
 different proportions (measured across the real bases: hips differ ~10cm,
 limb bones 25-60%, width up to ~25%). :func:`compute_bone_placements` (R7)
-is the fuller transform: it also translates each bone to the target base
-bone's position and stretches it to the target bone's length, so each
-clothing region is positioned AND scaled to the new base. Girth (across-
-bone thickness) is left to the surface fit (card R8).
+is the fuller transform used by the Fit/Batch stage 0: it also translates
+each bone to the target base bone's position and stretches it to the target
+bone's length, so each clothing region is positioned AND scaled to the new
+base. Girth (across-bone thickness) is left to the surface fit (card R8).
+Both apply the SAME rest-orientation-compensated rotation (identity when
+the target is at rest); :func:`compute_bone_placements` carries it in world
+space (see its "Rotation" note -- fix A), :func:`compute_pose_rotations` in
+bone-local space. :func:`compute_pose_rotations` is retained as the
+rotation-only primitive (used by the standalone pose tests and available
+for a rotation-only workflow); the operators use the full placement.
 """
 
 
@@ -92,18 +98,42 @@ def compute_bone_placements(garment_arm, target_arm, bone_pairs):
     Returns an ordered list of ``(garment_bone_name, world_rigid_matrix,
     length_scale)`` in parent-first order (see :func:`_parent_first`):
 
-    - ``world_rigid_matrix`` is an **orthonormal** rotation + translation
-      (the target bone's world position and orientation) -- no scale baked
-      in, so a caller can set it via ``pose_bone.matrix`` cleanly.
+    - ``world_rigid_matrix`` is an **orthonormal** rotation + translation:
+      the target bone's world *position*, and an orientation that carries
+      the target's *pose change* onto the garment bone's OWN rest
+      orientation (see "Rotation" below) -- no scale baked in, so a caller
+      can set it via ``pose_bone.matrix`` cleanly.
     - ``length_scale`` is ``target_bone_length / garment_bone_rest_length``
       (both in world units) -- the along-bone (Y) stretch the caller applies
       separately via ``pose_bone.scale.y``. Girth (X/Z) is left at rest; the
       surface fit refines thickness (card R8).
 
+    **Rotation (the R7-regression fix).** An earlier version slammed the
+    target bone's *absolute* world orientation onto the garment bone. That
+    is only correct when the two rigs share bone rest orientations; where
+    they don't -- differing bone roll / rest-frame conventions across rig
+    families, and especially helper bones (breast/thumb/toe) whose rest
+    axes differ wildly -- it injected a large spurious rotation into the
+    skinned region *even at rest* (measured Tech Set -> Egirl: ``Boob``
+    142.9deg, ``Thumb`` 40-55deg), folding the chest/cuffs inside-out. The
+    correct orientation carries only the target's pose *delta* (its current
+    world rotation relative to its own rest) onto the garment bone's own
+    rest orientation:
+
+        pose_delta = R_target_now . R_target_rest^-1
+        world_rot  = pose_delta . R_garment_rest
+
+    When the target base is at rest (``R_target_now == R_target_rest``),
+    ``pose_delta`` is identity and ``world_rot`` is exactly the garment
+    bone's own rest orientation -- so a rest-pose retarget now *repositions
+    and resizes* each bone without twisting its skinned surface, which is
+    what a co-posed pair should do. This is the same rest-orientation
+    compensation :func:`compute_pose_rotations` already applied for the
+    rotation-only transfer, expressed here in world space.
+
     Keeping rotation and scale separate avoids a non-orthonormal matrix that
     Blender's decomposition would mangle into the wrong axis. Pure reads; no
-    scene mutation. Rotation-only :func:`compute_pose_rotations` is retained
-    for the Fit/Batch stage-0 integration until R8 switches it over.
+    scene mutation.
     """
     target_world = target_arm.matrix_world
     garment_world = garment_arm.matrix_world
@@ -115,7 +145,8 @@ def compute_bone_placements(garment_arm, target_arm, bone_pairs):
         if target_name is None:
             continue
         target_pose_bone = target_arm.pose.bones.get(target_name)
-        if target_pose_bone is None:
+        target_bone = target_arm.data.bones.get(target_name)
+        if target_pose_bone is None or target_bone is None:
             continue
 
         head = target_world @ target_pose_bone.head
@@ -124,8 +155,15 @@ def compute_bone_placements(garment_arm, target_arm, bone_pairs):
         if target_length < 1e-9:
             continue
 
-        # Orthonormal rotation from the target bone's world orientation.
-        rotation = (target_world @ target_pose_bone.matrix).to_quaternion()
+        # Carry only the target's pose DELTA onto the garment bone's own
+        # rest orientation, so a rest-pose target injects no twist (see the
+        # "Rotation" note above). All three are world-space rotations.
+        target_rest_rot = (target_world @ target_bone.matrix_local).to_quaternion()
+        target_now_rot = (target_world @ target_pose_bone.matrix).to_quaternion()
+        pose_delta = target_now_rot @ target_rest_rot.inverted()
+        garment_rest_rot = (garment_world @ garment_bone.matrix_local).to_quaternion()
+        rotation = (pose_delta @ garment_rest_rot).normalized()
+
         world_rigid = rotation.to_matrix().to_4x4()
         world_rigid.translation = head
 

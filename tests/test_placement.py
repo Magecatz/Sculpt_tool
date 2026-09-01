@@ -153,6 +153,58 @@ class PlaceOperatorTest(unittest.TestCase):
         # Mechanism: scale inheritance is off on every garment bone.
         self.assertTrue(all(b.inherit_scale == 'NONE' for b in garment_rig.data.bones))
 
+    def test_rest_orientation_difference_injects_no_twist(self):
+        # Regression gate for the R7 placement rotation bug (fix A). The
+        # garment rig and target rig have a bone of IDENTICAL geometry
+        # (same head/tail/length/position) that differs ONLY in roll --
+        # the cross-rig rest-orientation difference that real rig families
+        # carry (measured Tech Set -> Egirl: Boob 142.9deg twist). A mesh
+        # skinned to that bone, placed onto the target base AT REST, must
+        # NOT be twisted about the bone axis: the target contributes no
+        # pose, so placement should reposition/scale only. The pre-fix code
+        # slammed the target bone's absolute orientation onto the garment
+        # bone and twisted the skinned region by the full roll difference.
+        import math
+        garment_rig = common.make_armature("GRig", [
+            ("Hips", (0.0, 0.0, 1.0), (0.0, 0.0, 1.2), None),
+            # Bone along +X at z=1.0, rolled 90deg about its own axis.
+            ("Arm.L", (0.0, 0.0, 1.0), (1.0, 0.0, 1.0), "Hips", math.radians(90)),
+        ])
+        target_rig = common.make_armature("TRig", [
+            ("Hips", (0.0, 0.0, 1.0), (0.0, 0.0, 1.2), None),
+            # Same bone geometry, roll 0 -- only the rest orientation differs.
+            ("Arm_L", (0.0, 0.0, 1.0), (1.0, 0.0, 1.0), "Hips", 0.0),
+        ])
+        pairs = [("Hips", "Hips"), ("Arm.L", "Arm_L")]
+
+        # A blob skinned to Arm.L, sitting OFF the bone axis in +Z, so any
+        # twist about the (X) bone axis swings it out of the Z plane into Y.
+        garment = common.make_grid("Sleeve", x_segments=3, y_segments=3, size=0.15,
+                                   location=(0.5, 0.0, 1.25))
+        common.skin_mesh_all_to_bone(garment, garment_rig, "Arm.L")
+        garment.sculpt_tool.target_base_armature = target_rig
+
+        before = self._eval_positions(garment)
+        before_z = sum(p.z for p in before) / len(before)
+        before_y = sum(p.y for p in before) / len(before)  # ~0 (symmetric grid)
+
+        from sculpt_tool.operators import op_pose
+        op_pose.place_garment_onto_rig(bpy.context, garment_rig, target_rig, pairs)
+
+        after = self._eval_positions(garment)
+        after_z = sum(p.z for p in after) / len(after)
+        after_y = sum(p.y for p in after) / len(after)
+
+        # Identical geometry + rest-pose target => the blob stays put: still
+        # up in +Z (its z-offset above the bone axis is not rotated away),
+        # and its centroid does not swing into Y. Signed-mean Y is the twist
+        # detector (the grid's own +/-Y extent cancels; a real twist shifts
+        # the centroid). Pre-fix, a 90deg roll twist about the (X) bone axis
+        # drops the +0.25 z-offset into Y, sending after_z toward the bone's
+        # z=1.0 and after_y toward ~-0.25.
+        self.assertAlmostEqual(after_z, before_z, places=3)
+        self.assertAlmostEqual(after_y, before_y, places=3)
+
     def test_hip_height_fix(self):
         # A garment skinned to Hips rises when the target base's hips are
         # higher -- the "garment sits too low" fix.
