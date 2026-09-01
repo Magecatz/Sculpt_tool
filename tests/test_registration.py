@@ -43,6 +43,7 @@ class RegistrationSmokeTest(unittest.TestCase):
             self.assertTrue(hasattr(bpy.types.Object, "sculpt_tool"))
             self.assertTrue(hasattr(bpy.types, "SCULPTTOOL_OT_bind_garment"))
             self.assertTrue(hasattr(bpy.types, "SCULPTTOOL_OT_fit_garment"))
+            self.assertTrue(hasattr(bpy.types, "SCULPTTOOL_OT_batch_fit"))
 
             obj = common.make_grid("Probe", x_segments=1, y_segments=1)
             self.assertTrue(hasattr(obj, "sculpt_tool"))
@@ -62,6 +63,7 @@ class RegistrationSmokeTest(unittest.TestCase):
         self.assertFalse(hasattr(bpy.types.Object, "sculpt_tool"))
         self.assertFalse(hasattr(bpy.types, "SCULPTTOOL_OT_bind_garment"))
         self.assertFalse(hasattr(bpy.types, "SCULPTTOOL_OT_fit_garment"))
+        self.assertFalse(hasattr(bpy.types, "SCULPTTOOL_OT_batch_fit"))
 
     def test_register_unregister_is_repeatable(self):
         # A Tester re-running this suite in the same Blender session (or

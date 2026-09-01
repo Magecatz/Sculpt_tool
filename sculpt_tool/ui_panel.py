@@ -14,8 +14,13 @@ add/remove/assign/select helpers in operators/op_pin_groups.py, laid
 out the same way Blender's own Object Data Properties > Vertex Groups
 panel is (a filtered ``UIList`` + side add/remove column + an
 Assign/Select row using the same ``scene.tool_settings.
-vertex_group_weight`` the built-in panel uses). Batch is still a
-stubbed/disabled placeholder — a later card wires OT_batch_fit.
+vertex_group_weight`` the built-in panel uses). Batch is wired to
+OT_batch_fit (operators/op_batch.py): a Target Collection picker
+(``settings.batch_target_collection``) plus the Run Batch button, which
+reuses every field already exposed in Parameters above -- there are
+deliberately no separate batch-only offset/collision/smoothing fields,
+per ARCHITECTURE.md section 8's "no separate batch-specific solver
+logic".
 """
 
 import bpy
@@ -110,9 +115,9 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
 
         batch_box = layout.box()
         batch_box.label(text="Batch", icon='RENDERLAYERS')
-        batch_box.enabled = False
-        batch_box.label(text="Target Collection: (not yet implemented)")
-        batch_box.label(text="Run Batch (not yet implemented)", icon='RENDERLAYERS')
+        if settings:
+            batch_box.prop(settings, "batch_target_collection")
+        batch_box.operator("sculpttool.batch_fit", icon='RENDERLAYERS')
 
 
 _classes = (
