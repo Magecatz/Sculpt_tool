@@ -163,5 +163,66 @@ class DetectRigsOperatorTest(unittest.TestCase):
         self.assertIs(garment.sculpt_tool.target_base_armature, arm)
 
 
+# Two rigs with DIFFERENT naming conventions but the same joints, so the
+# canonical mapper (R2) has something real to normalize.
+_DOT_RIG = [
+    ("Hips", (0, 0, 1.0), (0, 0, 1.2), None),
+    ("Arm.L", (0.2, 0, 1.5), (0.6, 0, 1.5), None),
+    ("Leg.L", (0.1, 0, 1.0), (0.1, 0, 0.5), None),
+]
+_USCORE_RIG = [
+    ("Hips", (0, 0, 1.0), (0, 0, 1.2), None),
+    ("Arm_L", (0.2, 0, 1.5), (0.6, 0, 1.5), None),
+    ("Leg_L", (0.1, 0, 1.0), (0.1, 0, 0.5), None),
+]
+
+
+class ComputeBoneMapOperatorTest(unittest.TestCase):
+    """``OT_compute_bone_map`` + override add/remove -- roadmap R2's UI
+    bridge from a real ``bpy`` armature to ``core.rig_map``."""
+
+    def setUp(self):
+        common.clear_scene()
+        if not hasattr(bpy.types.Object, "sculpt_tool"):
+            sculpt_tool.register()
+
+    def tearDown(self):
+        if hasattr(bpy.types.Object, "sculpt_tool"):
+            sculpt_tool.unregister()
+
+    def _setup_garment(self):
+        garment = common.make_grid("Garment", x_segments=2, y_segments=2)
+        garment_rig = common.make_armature("GarmentRig", _DOT_RIG)
+        target_rig = common.make_armature("TargetRig", _USCORE_RIG)
+        common.bind_mesh_to_armature(garment, garment_rig)
+        garment.sculpt_tool.target_base_armature = target_rig
+        bpy.context.view_layer.objects.active = garment
+        garment.select_set(True)
+        return garment, garment_rig, target_rig
+
+    def test_compute_reports_and_stores_summary(self):
+        garment, _gr, _tr = self._setup_garment()
+        result = bpy.ops.sculpttool.compute_bone_map()
+        self.assertEqual(result, {'FINISHED'})
+        self.assertIn("pairs", garment.sculpt_tool.bone_map_summary)
+
+    def test_compute_cancels_without_target_rig(self):
+        garment = common.make_grid("Garment", x_segments=2, y_segments=2)
+        common.bind_mesh_to_armature(garment, common.make_armature("GarmentRig", _DOT_RIG))
+        bpy.context.view_layer.objects.active = garment
+        result = bpy.ops.sculpttool.compute_bone_map()
+        self.assertEqual(result, {'CANCELLED'})
+
+    def test_override_add_and_remove(self):
+        garment, _gr, _tr = self._setup_garment()
+        self.assertEqual(len(garment.sculpt_tool.bone_map_overrides), 0)
+        bpy.ops.sculpttool.bone_override_add()
+        self.assertEqual(len(garment.sculpt_tool.bone_map_overrides), 1)
+        garment.sculpt_tool.bone_map_overrides[0].source_bone = "Arm.L"
+        garment.sculpt_tool.bone_map_overrides[0].target_bone = "Arm_L"
+        bpy.ops.sculpttool.bone_override_remove()
+        self.assertEqual(len(garment.sculpt_tool.bone_map_overrides), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

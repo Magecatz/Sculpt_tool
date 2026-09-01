@@ -47,6 +47,30 @@ BIND_MODE_OVERRIDE_ITEMS = (
 )
 
 
+class SCULPTTOOL_PG_bone_override(bpy.types.PropertyGroup):
+    """One manual bone-map override row (roadmap R2).
+
+    Lets a user force a garment-rig bone to pair with a specific
+    target-base-rig bone, or -- with an empty ``target_bone`` -- explicitly
+    leave the source bone unmapped, correcting or supplementing
+    ``core.rig_map.build_bone_map``'s auto-resolution. Stored as a
+    CollectionProperty on the garment's settings and passed to
+    ``build_bone_map(..., overrides=...)`` by the pose-transfer stage.
+    """
+
+    source_bone: bpy.props.StringProperty(
+        name="Garment Bone",
+        description="Bone name on the garment/source rig to override the mapping for",
+    )
+    target_bone: bpy.props.StringProperty(
+        name="Target Bone",
+        description=(
+            "Bone name on the target base rig to map it to. Leave empty to "
+            "explicitly leave the garment bone unmapped"
+        ),
+    )
+
+
 class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
     source_body: bpy.props.PointerProperty(
         name="Source Body",
@@ -145,6 +169,24 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
         min=0,
         soft_max=10,
     )
+    # --- Manual bone-map overrides + last-computed summary (R2) ---------
+    bone_map_overrides: bpy.props.CollectionProperty(
+        type=SCULPTTOOL_PG_bone_override,
+        name="Bone Map Overrides",
+        description=(
+            "Manual corrections to the auto-resolved garment<->target-base "
+            "bone map, applied by the pose-transfer stage"
+        ),
+    )
+    bone_map_overrides_index: bpy.props.IntProperty(
+        name="Active Override",
+        default=0,
+    )
+    bone_map_summary: bpy.props.StringProperty(
+        name="Bone Map Summary",
+        description="Result of the last Compute Bone Map run (read-only)",
+        default="",
+    )
     batch_target_collection: bpy.props.PointerProperty(
         name="Target Collection",
         description=(
@@ -162,6 +204,7 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
 
 
 _classes = (
+    SCULPTTOOL_PG_bone_override,
     SCULPTTOOL_PG_settings,
 )
 
