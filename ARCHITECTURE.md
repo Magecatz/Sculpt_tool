@@ -500,6 +500,17 @@ bundled Python and this avoids needing to maintain that.
   DECISIONS.md §2's own repro scale. Run explicitly (`blender --background
   --factory-startup --python tests/perf.py`) when re-validating a
   performance claim before it goes into this document.
+- `tests/corpus_repro.py` / `tests/retarget_repro.py` — **opt-in only**,
+  needing the gitignored `Test_Items/` assets (they exit 0 with SKIPPED
+  when absent). `corpus_repro.py` is the collision-residual A/B; and
+  `retarget_repro.py` (roadmap R6) is the real-asset retarget regression:
+  it retargets the Tech Set onto all three bases (Egirl / Fantasy / Venus,
+  exercising the dot / underscore / Venus naming families) through the full
+  deployed pipeline via the operators, and gates on bone-map coverage,
+  bind/fit completion, on-body placement, and a lenient residual-
+  penetration ceiling. Its always-run companion is `tests/test_retarget.py`
+  (a synthetic two-rig, two-naming fixture) so the naming-mapping-in-
+  retarget path can't silently regress even without the real assets.
 
 **Testable-with-plain-data core.** `_laplacian_step`, `_edge_length_step`
 (`core/smoothing.py`), `_barycentric_weights`, `_triangle_frame`,
