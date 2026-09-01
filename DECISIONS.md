@@ -522,6 +522,35 @@ hem-adjacent geometry, tracked under `8432ee45` plus Backlog card
 `e893bfdd` for any future genuine structural redesign beyond
 dual-trajectory.
 
+**Attempt 3 — boundary-aware damping (prototyped 2026-09-01, card
+`e893bfdd`, REJECTED, not shipped).** This is the one mechanism `e893bfdd`
+itself flagged as un-tried ("an explicitly boundary-aware damping term near
+free mesh edges"), now enabled by the `boundary_vertex_neighbors` primitive
+added for the open-edge card (`b0bb6d3e`). Prototype: compute a
+free-boundary proximity per vertex (1.0 on the open edge, decaying over the
+grading width by graph distance), and damp each vertex's per-iteration
+displacement by `1 - K · proximity · 4·pin·(1-pin)` -- a term that peaks at
+the graded midpoint (`pin=0.5`) and vanishes at `pin=0`/`pin=1`, so it
+touches only intermediate-pin vertices near a free edge and leaves the
+monotonicity endpoints alone. Measured worst overshoot ratio on the same
+three topologies (K swept):
+
+| topology | K=0 (baseline) | K=0.5 | K=0.8 | K=1.0 |
+|---|---|---|---|---|
+| 7x7 grid | 1.17 | 1.08 | 1.04 | 1.03 |
+| 12x12 grid | 1.23 | 1.14 | 1.06 | 1.13 |
+| **hem tube** | **1.33** | **1.35** | **1.37** | **1.39** |
+
+It substantially improves the flat grids but **regresses the cylindrical
+hem-ring at every K** -- and the hem-ring is precisely the curved case
+`e893bfdd` calls "the shape most exposed in real Pin_Hem/Pin_Cuff usage."
+So, like the two dual-trajectory variants, it trades away the hard/most-
+relevant case; rejected and not shipped (no code change to live smoothing).
+`e893bfdd` remains the tracked residual: a mechanism that helps the
+hem-ring specifically -- not flat-grid overshoot, which is already mild --
+is what a future attempt must find (a genuine multi-pass/fixed-point
+constraint solve remains the untried direction).
+
 ---
 
 ## 4. Binding: bind-time reference geometry frozen (schema v2)
