@@ -213,9 +213,8 @@ later edges in the same sweep see earlier ones) are the reason a naive
 the sequential dependency is what the curvature-shrink fix's convergence
 behavior depends on. Mitigation candidates, none yet validated:
 
-- the adaptive/early-exit sub-sweep variant, Backlog card `5b232224`
-  (stop once residual edge-length error falls under some threshold
-  instead of always running all 16);
+- ~~the adaptive/early-exit sub-sweep variant, Backlog card `5b232224`~~
+  **— investigated 2026-09-01, no benefit, not shipped (see below);**
 - exposing sub-sweep count as a batch-mode quality/speed trade-off;
 - **graph/edge-colored Gauss-Seidel** — partitioning edges into colors
   where no two edges in a color share a vertex, then vectorizing within
@@ -225,6 +224,35 @@ behavior depends on. Mitigation candidates, none yet validated:
   adoption — "needs re-validation" is not the same as "impossible," and
   this option should not be dismissed on the strength of the sequential-
   dependency argument alone (which only rules out the naive rewrite).
+
+**Adaptive/early-exit sub-sweep: investigated and rejected (card `5b232224`,
+2026-09-01).** Prototyped exactly the tracked variant — stop
+`_edge_length_step`'s sub-sweep loop early once a sub-sweep's largest
+per-edge *relative* length error falls under a tolerance, with 16 kept as a
+cap. Measured (checked-in-safe `make_grid`/`make_tube` repro, sub-sweep
+counter + tube-radius shrink, over `relax(iterations=10)`):
+
+| tolerance | flat-grid sub-sweeps | tube sub-sweeps | tube shrink |
+|---|---|---|---|
+| 0 (fixed 16) | 160 | 160 | 0.576% |
+| 5e-4 | 160 | 160 | 0.576% |
+| 2e-3 | 160 | 160 | 0.576% |
+| 5e-3 | 160 | 160 | 0.576% |
+| 1e-2 (unsafe) | 160 | 156 | 0.577% |
+
+The early-exit essentially never triggers. The reason is structural: each
+OUTER `relax()` iteration's Laplacian step re-introduces edge-length
+distortion, and 16 Gauss-Seidel sub-sweeps do not drive the *max* per-edge
+residual below ~1% for these meshes (consistent with the ~0.58% residual
+shrink the sub-sweeps are there to bound) — so there is no "already
+converged, stop early" state within the sweep budget to exploit. At any
+tolerance tight enough to leave the tube shrinkage unchanged, sub-sweep
+count is unchanged (no speedup); the only tolerance that trims a few sweeps
+(1e-2) is far too loose to trust and still saves almost nothing. Conclusion:
+the fixed 16 stays, now documented in `core/smoothing.py` as a *cap* with
+this finding, rather than shipping dead early-exit code. The genuinely
+promising smoothing speedup remains **edge-colored Gauss-Seidel** (above),
+not early-exit.
 
 This was fully re-verified clean against the collision pass's
 anchor-based tunneling correction: a vertex snapped by `anchor_position +
