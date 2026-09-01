@@ -799,23 +799,42 @@ differences above. That mapping layer is roadmap card R2.
 The direction is settled (user-directed): an **armature-driven Stage 1**
 that matches the two rigs' bones (normalizing naming) and transfers the
 target base's pose onto the garment via its own skin weights, before the
-existing sculpt stage refines the surface. Scoped across six board cards:
+existing sculpt stage refines the surface. Scoped across six board cards —
+**all R1–R6 now Deployed** (single session, 2026-09-01; PRs #25–#29 + the
+R6 regression):
 
-- **R1** `062cfedd` (To-Do) — model source/target base rigs + target-base
-  picker (foundation).
-- **R2** `1b7b56eb` (To-Do) — canonical humanoid bone mapping across the
-  naming families in §6e.
-- **R4** `812a0a6a` (To-Do) — interim: refuse clearly on a gross
-  pose/position mismatch instead of reporting success (subsumes row 2).
-- **R3** `cfa7e4aa` (Backlog, needs R1+R2) — the pose-transfer stage
-  itself; the concrete fix for anchor card `9df4bc00`.
-- **R5** `450bdee9` (Backlog, needs R3) — wire pose→sculpt into
-  Fit/Batch as the end-to-end flow.
-- **R6** `c342ccc2` (Backlog, needs R3/R5) — real-asset retarget
-  regression (Tech Set → Egirl/Fantasy/Venus vs `Example1.blend`).
+- **R1** `062cfedd` (Deployed, PR #25) — the "base" concept + rig awareness
+  (`core/rig.py`) + source/target base rig pickers + `OT_detect_rigs`.
+- **R2** `1b7b56eb` (Deployed, PR #26) — canonical humanoid bone mapping
+  (`core/rig_map.py`) across the naming families in §6e, with a manual
+  override UI. Verified: every ordered pair of the five real rigs resolves
+  the full 21-bone primary chain.
+- **R4** `812a0a6a` (Deployed, PR #27) — the interim guard: refuse a gross
+  pose/position mismatch (`core/alignment.py`) instead of reporting
+  success (subsumes §7 row 2).
+- **R3** `cfa7e4aa` (Deployed, PR #28) — the pose-transfer stage
+  (`core/pose.py`, per-bone local-rotation retarget with rest-orientation
+  compensation); the concrete fix for anchor card `9df4bc00`.
+- **R5** `450bdee9` (Deployed, PR #29) — pose wired as the fit's stage 0 in
+  Fit/Batch (`auto_pose_transfer`), posing per target base in batch.
+- **R6** `c342ccc2` (Deployed) — real-asset retarget regression
+  (`tests/retarget_repro.py` opt-in + `tests/test_retarget.py` fast): Tech
+  Set → Egirl/Fantasy/Venus across all three naming families, gated on
+  bone-map coverage + bind/fit completion + on-body placement + a lenient
+  residual-penetration ceiling.
 
-Per section 9's standing rule this section stays qualitative: it records a
-design/usability finding and a plan, not measured numbers. Any
-quantitative claim a fix makes (e.g. "pose transfer reduces residual
-penetration by X on the rigged corpus") must arrive with its own
-reproducible test — that is precisely what R6 exists to provide.
+**Measured (R6, `tests/retarget_repro.py`, 2026-09-01):** all nine (Tech
+Set piece × base) retargets — Top/Sweater/Pants onto Egirl/Fantasy/Venus —
+resolve the full primary chain (0 gaps), bind+fit cleanly, stay on-body,
+with residual body penetration 0.0–3.3% of garment vertices (ceiling 25%).
+Ground-truth reference: the manual `Example1.blend` Tech Outfit sits at a
+~0.67%-of-body-diagonal mean standoff.
+
+**One residual coupling (board card `a541e4cb`, Backlog).** The pose stage
+places the garment *mesh*; the surface projection still re-evaluates the
+*frozen bind-time* correspondence (§4 / ARCHITECTURE §2) rather than
+re-deriving it from the posed garment, and a live posed Armature modifier
+double-transforms the bake. So the pipeline is a **complete, correct**
+retarget onto a **rest-pose** target base (the whole corpus, and what R6
+gates), and the *fully correct* fit onto a **genuinely non-rest** target
+base is the remaining work. See ARCHITECTURE §3 step 0 and §7 row 18.
