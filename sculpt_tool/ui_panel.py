@@ -58,6 +58,18 @@ class SCULPTTOOL_UL_pin_groups(bpy.types.UIList):
         return flags, []
 
 
+class SCULPTTOOL_UL_bone_overrides(bpy.types.UIList):
+    """Editable list of manual bone-map override rows (roadmap R2): each
+    row is a garment-bone -> target-bone text pair the user can correct/
+    supply where the auto-resolver missed."""
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        row.prop(item, "source_bone", text="", emboss=True)
+        row.label(icon='FORWARD')
+        row.prop(item, "target_bone", text="", emboss=True)
+
+
 class SCULPTTOOL_PT_main(bpy.types.Panel):
     bl_label = "Sculpt Tool"
     bl_idname = "SCULPTTOOL_PT_main"
@@ -110,6 +122,26 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
                         icon='CHECKMARK',
                     )
 
+            # Bone Map (roadmap R2): compute the canonical garment<->target
+            # correspondence, show its summary, and let the user override
+            # individual pairs.
+            map_col = base_box.column(align=True)
+            map_col.operator("sculpttool.compute_bone_map", icon='BONE_DATA')
+            if settings.bone_map_summary:
+                map_col.label(text=settings.bone_map_summary, icon='INFO')
+
+            map_col.label(text="Manual overrides:")
+            override_row = map_col.row()
+            override_row.template_list(
+                "SCULPTTOOL_UL_bone_overrides", "",
+                settings, "bone_map_overrides",
+                settings, "bone_map_overrides_index",
+                rows=2,
+            )
+            override_buttons = override_row.column(align=True)
+            override_buttons.operator("sculpttool.bone_override_add", icon='ADD', text="")
+            override_buttons.operator("sculpttool.bone_override_remove", icon='REMOVE', text="")
+
         fit_box = layout.box()
         fit_box.label(text="Fit", icon='MOD_SHRINKWRAP')
         if settings:
@@ -156,6 +188,7 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
 
 _classes = (
     SCULPTTOOL_UL_pin_groups,
+    SCULPTTOOL_UL_bone_overrides,
     SCULPTTOOL_PT_main,
 )
 
