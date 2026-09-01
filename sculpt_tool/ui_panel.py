@@ -157,6 +157,7 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
             collision_row.enabled = settings.use_collision_resolution
             collision_row.prop(settings, "collision_margin")
             params_box.prop(settings, "smoothing_iterations")
+            params_box.prop(settings, "skip_alignment_check")
 
         pins_box = layout.box()
         pins_box.label(text="Pin Regions", icon='GROUP_VERTEX')

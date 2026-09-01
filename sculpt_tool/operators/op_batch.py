@@ -81,7 +81,8 @@ deterministic by construction, not by an extra guard here.
 
 import bpy
 
-from ..core import pipeline, smoothing, storage
+from . import _shapekeys
+from ..core import alignment, geometry, pipeline, smoothing, storage
 
 # Shape key name prefix for a batch target's own output -- see module
 # docstring's "Output naming" section. Built from storage.
@@ -198,6 +199,21 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
 
         depsgraph = context.evaluated_depsgraph_get()
 
+        # Roadmap R4 alignment guard. The garment's world positions are a
+        # per-garment invariant (constant across the batch's targets), so
+        # they're computed once here, not once per target -- same hoisting
+        # rationale as relax_ctx / matrix_inverse above.
+        check_alignment = not getattr(settings, "skip_alignment_check", False)
+        garment_positions = None
+        if check_alignment:
+            # Muted so a re-run's own stacked Fitted_<target> bakes aren't
+            # read back in as the garment's position (see _shapekeys).
+            with _shapekeys.muted_addon_output(context, garment_obj):
+                align_depsgraph = context.evaluated_depsgraph_get()
+                garment_positions, _ = geometry.world_space_positions_and_normals(
+                    garment_obj, align_depsgraph
+                )
+
         successes = []
         failures = []
 
@@ -208,8 +224,31 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
                 wm.progress_update(index)
 
                 try:
+                    target_ctx = geometry.TargetContext.build(target_obj, depsgraph)
+                except ValueError as exc:
+                    failures.append((target_obj.name, str(exc)))
+                    self.report(
+                        {'WARNING'}, f"Batch Fit: skipped '{target_obj.name}' -- {exc}"
+                    )
+                    continue
+
+                if check_alignment:
+                    report = alignment.check_against_body(
+                        garment_positions, target_ctx,
+                        label=f"target body '{target_obj.name}'",
+                    )
+                    if not report.aligned:
+                        failures.append((target_obj.name, report.reason))
+                        self.report(
+                            {'WARNING'},
+                            f"Batch Fit: skipped '{target_obj.name}' -- {report.reason}",
+                        )
+                        continue
+
+                try:
                     fitted_world = pipeline.fit_once(
-                        garment_obj, target_obj, params, depsgraph, relax_ctx=relax_ctx
+                        garment_obj, target_obj, params, depsgraph,
+                        relax_ctx=relax_ctx, target_ctx=target_ctx,
                     )
                 except ValueError as exc:
                     failures.append((target_obj.name, str(exc)))

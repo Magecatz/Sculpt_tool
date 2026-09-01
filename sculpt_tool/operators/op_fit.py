@@ -22,7 +22,8 @@ data is never touched.
 
 import bpy
 
-from ..core import pipeline, storage
+from . import _shapekeys
+from ..core import alignment, geometry, pipeline, storage
 
 # The single source of truth for this name is core.storage
 # (FITTED_SHAPE_KEY_NAME) -- operators/op_bind.py also needs it, to mute
@@ -79,9 +80,36 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
         )
 
         depsgraph = context.evaluated_depsgraph_get()
+
+        # Roadmap R4: refuse a gross pose/position mismatch instead of
+        # silently baking garbage. Build the target context once here and
+        # reuse it for the fit (via fit_once's target_ctx param), so the
+        # guard adds no duplicate target evaluation.
+        try:
+            target_ctx = geometry.TargetContext.build(target_body_obj, depsgraph)
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+        if not getattr(settings, "skip_alignment_check", False):
+            # Read the garment's AUTHORED (optionally armature-posed) mesh,
+            # not one displaced by this add-on's own prior Fitted* bake --
+            # else a re-fit measures alignment against our own output.
+            with _shapekeys.muted_addon_output(context, garment_obj):
+                depsgraph = context.evaluated_depsgraph_get()
+                garment_positions, _ = geometry.world_space_positions_and_normals(
+                    garment_obj, depsgraph
+                )
+            report = alignment.check_against_body(
+                garment_positions, target_ctx, label=f"target body '{target_body_obj.name}'"
+            )
+            if not report.aligned:
+                self.report({'ERROR'}, report.reason)
+                return {'CANCELLED'}
+
         try:
             fitted_world = pipeline.fit_once(
-                garment_obj, target_body_obj, params, depsgraph
+                garment_obj, target_body_obj, params, depsgraph, target_ctx=target_ctx
             )
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
