@@ -217,6 +217,15 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
 
         check_alignment = not getattr(settings, "skip_alignment_check", False)
 
+        # If we'll place per target, make sure the garment's Armature deform
+        # is live before the loop (a prior placement fit may have muted it);
+        # it's re-muted once after the loop so the baked keys aren't deformed
+        # twice (roadmap R8).
+        if garment_arm is not None:
+            op_pose.set_armature_deform_visible(garment_obj, True)
+            context.view_layer.update()
+        placement_used = False
+
         successes = []
         failures = []
 
@@ -235,22 +244,35 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
                     )
                     continue
 
-                # Stage 0: pose the garment onto THIS target base's rig.
+                # Stage 0 (R7): PLACE the garment onto THIS target base's rig
+                # (position + rotation + scale), reset to rest first so
+                # targets don't accumulate. Falls back to a plain reset for a
+                # target with no rig, so it isn't left in a prior target's
+                # placement.
+                placed = False
                 if garment_arm is not None:
                     target_rig = rig.deforming_armature(target_obj)
                     if target_rig is not None:
-                        op_pose.pose_garment_onto_rig(
+                        op_pose.place_garment_onto_rig(
                             context, garment_arm, target_rig, pose_overrides
                         )
+                        placed = True
+                        placement_used = True
+                    else:
+                        op_pose.reset_pose(garment_arm)
+                        context.view_layer.update()
 
-                if check_alignment:
-                    # Read the (now-posed) garment, muted so a re-run's own
+                garment_positions = None
+                if placed or check_alignment:
+                    # Read the (now-placed) garment, muted so a re-run's own
                     # stacked Fitted_<target> bakes aren't read back in.
                     with _shapekeys.muted_addon_output(context, garment_obj):
                         align_depsgraph = context.evaluated_depsgraph_get()
                         garment_positions, _ = geometry.world_space_positions_and_normals(
                             garment_obj, align_depsgraph
                         )
+
+                if check_alignment:
                     report = alignment.check_against_body(
                         garment_positions, target_ctx,
                         label=f"target body '{target_obj.name}'",
@@ -264,10 +286,16 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
                         continue
 
                 try:
-                    fitted_world = pipeline.fit_once(
-                        garment_obj, target_obj, params, depsgraph,
-                        relax_ctx=relax_ctx, target_ctx=target_ctx,
-                    )
+                    if placed:
+                        # Conform the placed garment (see op_fit / R8).
+                        fitted_world = pipeline.conform_placed(
+                            garment_positions, target_ctx, params, garment_obj
+                        )
+                    else:
+                        fitted_world = pipeline.fit_once(
+                            garment_obj, target_obj, params, depsgraph,
+                            relax_ctx=relax_ctx, target_ctx=target_ctx,
+                        )
                 except ValueError as exc:
                     failures.append((target_obj.name, str(exc)))
                     self.report(
@@ -310,6 +338,12 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
             wm.progress_update(len(targets))
         finally:
             wm.progress_end()
+
+        # Placement is baked into the per-target keys; hide the live Armature
+        # deform so it doesn't apply twice (roadmap R8). Re-enabled on the
+        # next placement run.
+        if placement_used:
+            op_pose.set_armature_deform_visible(garment_obj, False)
 
         mesh.update()
 

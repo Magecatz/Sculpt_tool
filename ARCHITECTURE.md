@@ -190,24 +190,29 @@ writeup of all three, and section 7 row 11 for current status):**
 
 ## 3. Fit pipeline (applied per target body)
 
-0. **Pose transfer (Stage 1 / stage 0 of the fit)** — when the garment and
-   the target base are both rigged and `auto_pose_transfer` is on, the
-   garment's own armature is first posed to match the target base's pose,
-   bone by bone through the canonical humanoid bone map (`core/rig_map.py`),
-   with the garment deforming through its own skin weights. This is the
-   gross skeletal placement that carries each sleeve onto the matching arm,
-   each leg onto the matching leg, before the surface steps below refine the
-   drape (roadmap R1–R5; `core/pose.py`, `operators/op_pose.py`). It is a
-   no-op when the target base is already in the garment's pose (identity
-   transfer), so a co-posed garment/base pair is unchanged. Batch runs this
-   per target base. **Current boundary (tracked follow-up):** the pose
-   places the garment's mesh; the surface **Project** step below still
-   re-evaluates the *frozen bind-time* correspondence (§2) rather than
-   re-deriving it from the posed garment, and a garment with a live posed
-   Armature modifier double-transforms the baked Shape Key — so a *correct*
-   fit onto a genuinely non-rest target base needs the projection to consume
-   the posed garment (a fresh correspondence) and the bake to account for
-   the armature. See DECISIONS.md §6 and the tracking card noted in §7 row 18.
+0. **Armature placement (Stage 1 / stage 0 of the fit)** — when the garment
+   and the target base are both rigged and `auto_pose_transfer` is on, the
+   garment's own armature is first **placed** onto the target base's
+   skeleton, bone by bone through the canonical humanoid bone map
+   (`core/rig_map.py`), with the garment deforming through its own skin
+   weights. Placement is a full per-bone transform — **position + rotation +
+   along-bone length-scale** (roadmap R7, `core/pose.compute_bone_placements`)
+   — so each clothing region is moved, turned, AND sized to the matching
+   part of the target base (a garment authored for a shorter/lower base no
+   longer lands too low or too small). It is a no-op when the two skeletons
+   already coincide, so a co-posed same-proportion pair is unchanged. Batch
+   places per target base.
+
+   When placement runs, the surface steps below **conform the placed
+   garment** (`core/pipeline.conform_placed`, roadmap R8) rather than
+   re-projecting the frozen bind-time correspondence: fresh nearest-surface
+   anchors from the placed positions, collision push-out, and (if enabled)
+   smoothing whose rest edge lengths come from the *placed* mesh so a scaled
+   placement isn't shrunk back. The operator bakes the result and hides the
+   garment's live Armature modifier so the placement — already in the bake —
+   isn't applied twice. **Remaining:** girth (across-bone thickness) is not
+   driven by the armature; the collision/fit passes handle it. See
+   DECISIONS.md §6 and §7 row 18.
 1. **Project** — re-evaluate each garment vertex's stored binding against
    the target body's current BVH/vertex positions → raw fitted position.
 2. **Collision resolution** — BVH-based penetration test against the
@@ -400,7 +405,7 @@ broken," not the evidence for it.
 | 15 | Partial pin-weight blend was non-linear (0.76x-0.96x instead of ~weight) | Closed | `1638a2d4` (Deployed, PR [#11](https://github.com/Magecatz/Sculpt_tool/pull/11)) | Outer-iteration blend now matches section 6's documented "fully solved ↔ rigid" behavior. See DECISIONS.md §3a. |
 | 16 | `core/` modules called `bpy.context` directly (broke the "pure/testable" claim) | Closed | `cd0d1569` (Deployed, PR [#17](https://github.com/Magecatz/Sculpt_tool/pull/17)) | Depsgraph is now injected by callers; verified zero `bpy.context` under `sculpt_tool/core/`. |
 | 17 | No automated test suite | Closed | `3d1fc8bc` (Deployed, PR [#13](https://github.com/Magecatz/Sculpt_tool/pull/13)) | Headless Blender `unittest` harness under `tests/`; see section 9. |
-| 18 | No armature-driven initial posing / pose transfer (Stage 1) | **Implemented** (stage present + wired; one coupling remains) | R1–R5 deployed: `062cfedd`/`1b7b56eb`/`cfa7e4aa`/`812a0a6a`/`450bdee9` (PRs #25–#28 + R5) · residual `a541e4cb` (Backlog) | Stage 1 now exists and is wired as the fit's stage 0: `core/rig.py` (rig awareness) + `core/rig_map.py` (canonical bone mapping across naming families) + `core/pose.py`/`op_pose.py` (pose transfer) pose the garment onto the target base via the shared rig before the surface fit; `op_fit`/`op_batch` run it automatically (`auto_pose_transfer`), and R4's alignment guard (`812a0a6a`) refuses a gross mismatch instead of silently succeeding. Validated on real assets (Tech Set → arms-down Egirl: sleeves follow the arms). **Residual (card `a541e4cb`):** the surface projection still re-evaluates the *frozen* bind-time correspondence rather than re-deriving it from the posed garment, and a live posed Armature modifier double-transforms the bake — so a *fully correct* fit onto a genuinely non-rest target base is the remaining work. A no-op on the co-posed corpus (all rest-pose), which fits correctly today. See DECISIONS.md §6 and section 3 step 0. |
+| 18 | No armature-driven initial posing / placement (Stage 1) | **Implemented** (position + rotation + scale; fit consumes it) | R1–R8 deployed: `062cfedd`/`1b7b56eb`/`cfa7e4aa`/`812a0a6a`/`450bdee9`/`c342ccc2`/`19fe6586`/`a541e4cb` (PRs #25–#31 + R6/R8) | Stage 1 exists and is wired as the fit's stage 0: rig awareness (`core/rig.py`) + canonical bone mapping across naming families (`core/rig_map.py`) + **full placement** — position + rotation + along-bone length-scale (`core/pose.py`/`op_pose.py`, R7) — move and size the garment onto the target base; the surface fit then **conforms the placed garment** (`core/pipeline.conform_placed`, R8) and hides the live Armature modifier so the bake isn't double-deformed. R4's alignment guard refuses a gross mismatch. Validated on real assets (Tech Set → Egirl: garment lifted to the chest and scaled to the arms, vs. sitting low/mangled before). **Remaining:** girth (across-bone thickness) is handled by the collision/fit passes, not the armature; surface polish depends on the smoothing pass. See DECISIONS.md §6 and section 3 step 0. |
 
 **Note on rows 1, 2, 7-10, 18:** these are long-standing v1 design-scope
 limitations rather than defects found in already-built behavior. Rows
