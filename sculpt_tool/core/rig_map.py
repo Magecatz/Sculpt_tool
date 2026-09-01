@@ -97,6 +97,30 @@ _SIDED_SET = set(SIDED_JOINTS)
 # ``Ring Finger .L`` keeps its internal space and loses only the ``.L``).
 _SIDE_RE = re.compile(r"^(.*)[._ ]([LlRr])$")
 
+# Map breast/chest bones so the pose-placement stage positions and scales a
+# garment's bust region to the TARGET base's breasts (fixes bust balloon/
+# gap/ride-up on differently-shaped bases). Every rig family has these:
+# ``Boob.L``/``Boob_L`` (RP / vrbase) and ``Breast_1.L``/``Breast_2.L``
+# (Venus). They are NOT part of PRIMARY_CHAIN (a rig without them is still
+# fully "mapped"); they're an optional extra correspondence. Gated so the
+# behavior can be toggled (tests/renders) and disabled if a rig misbehaves.
+MAP_BREAST_BONES = True
+
+
+def _parse_breast(core):
+    """If ``core`` names a breast/chest deform bone, return its 1-based
+    segment; else ``None``. Excludes the ROOT (parent) and NIPPLE (tip)
+    bones -- only the breast body itself is placed."""
+    n = _normalize(core)
+    if "boob" not in n and "breast" not in n:
+        return None
+    if "root" in n or "nipple" in n:
+        return None
+    digits = re.findall(r"\d+", n)
+    segment = int(digits[-1]) if digits else 1
+    return min(max(segment, 1), 2)
+
+
 _FINGER_KEYWORDS = (
     ("thumb", "Thumb"),
     ("index", "Index"),
@@ -212,6 +236,13 @@ def canonicalize(bone_name):
         if side is None:
             return None
         return CanonicalBone(joint=family, side=side, segment=segment)
+
+    if MAP_BREAST_BONES:
+        breast_segment = _parse_breast(core)
+        if breast_segment is not None:
+            if side is None:
+                return None
+            return CanonicalBone(joint="Breast", side=side, segment=breast_segment)
 
     joint = _JOINT_ALIASES.get(_normalize(core))
     if joint is None:
