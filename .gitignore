@@ -5,3 +5,6 @@ __pycache__/
 
 # Local test assets (third-party creator meshes - do not redistribute)
 Test_Items/
+
+# Rendered showcase output (regenerable; may embed the gitignored assets)
+renders/out/
