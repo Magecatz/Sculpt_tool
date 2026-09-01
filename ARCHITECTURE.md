@@ -1,12 +1,39 @@
 # Sculpt Tool — Architecture
 
-Blender add-on that automatically fits a clothing/garment mesh onto a
-target body mesh: pushes the garment out of interpenetration, follows the
-target body's surface contours, and preserves the garment's own volume
-and silhouette (sleeves, collars, hems stay garment-shaped rather than
-collapsing flat onto the body). Designed to also support batch/automated
-use — fitting one garment across many body variants without a manual
-sculpt pass per pair.
+Blender add-on that retargets a clothing/garment mesh from the body it
+was authored for onto a *different* body. Every garment is modelled to
+fit one specific rigged body — its **base** (e.g. `FBX-Tech Set by
+Vinuzhka` is authored for the base `RP Female Base_Heeled Foot.fbx`).
+The tool's job is to make that garment properly wear on a different
+target base (e.g. `vrbase_Egirl_Heeled Foot.fbx`) automatically —
+replacing the manual re-sculpt an artist would otherwise do by hand (the
+`Test_Items/Example1.blend` reference is exactly such a hand-fit). It
+does this by: posing the garment onto the target base through the two
+rigs' shared skeleton, then conforming its surface — pushing the garment
+out of interpenetration, following the target base's contours, and
+preserving the garment's own volume and silhouette (sleeves, collars,
+hems stay garment-shaped rather than collapsing flat). Designed to also
+support batch/automated use — retargeting one garment across many bases
+without a manual sculpt pass per pair.
+
+**Intended end-to-end pipeline is two stages: pose, then sculpt.**
+
+1. **Pose** (skeleton does the gross placement) — match the garment
+   rig's bones to the target base rig's bones and transfer the base's
+   pose onto the garment via its own skin weights, so each sleeve lands
+   on the matching arm before any surface math runs.
+2. **Sculpt** (surface does the fine conforming) — the bind → project →
+   collision → smooth → bake pipeline documented below conforms the
+   posed garment to the base's actual proportions.
+
+**Stage 1 is not built yet** — this is the single most important gap in
+the tool as it currently stands: without it the sculpt stage alone can
+only slide vertices onto the nearest body surface, which puts a sleeve on
+the torso whenever the garment and base don't already share a pose. It is
+scoped across roadmap cards R1–R6 (board anchor: card `9df4bc00`); see
+section 1's alternatives note, section 7 row 18, and DECISIONS.md §6.
+Everything from section 2 onward describes the sculpt stage, which is
+what exists today.
 
 This started as the project's first architecture document, written
 before any add-on code existed. That is no longer true: `sculpt_tool/`
@@ -64,6 +91,20 @@ The pipeline runs in two phases:
   many bodies" goal without also automating cage generation, which is a
   harder problem than the projection-based approach below. Not pursued
   for v1.
+- **Armature-driven initial posing as a pre-stage** — *now the planned
+  Stage 1 (see the intro), not a rejected alternative.* Transfer the
+  target base's pose onto the garment through the two rigs' shared
+  skeleton (bone-name-matched, normalizing naming differences across rig
+  families) and the garment's own skin weights, before the
+  surface-projection refinement runs. This is how a real clothing
+  pipeline gets a garment *grossly* into place — the skeleton carries the
+  fabric along each limb — after which the sculpt stage only refines the
+  drape. The tool as-built deliberately does **not** do this yet: it
+  assumes the garment is already posed to match its base and treats "get
+  it into pose" as the user's responsibility, reading only the evaluated
+  (already-posed, if at all) mesh. That assumption is unenforced and
+  silently wrong when it doesn't hold. Scoped across roadmap cards R1–R6
+  (anchor card `9df4bc00`); see section 7 row 18 and DECISIONS.md §6.
 
 The chosen approach reuses Blender's low-level geometry primitives
 (`BVHTree` nearest-surface queries, barycentric coordinates,
@@ -340,11 +381,18 @@ broken," not the evidence for it.
 | 15 | Partial pin-weight blend was non-linear (0.76x-0.96x instead of ~weight) | Closed | `1638a2d4` (Deployed, PR [#11](https://github.com/Magecatz/Sculpt_tool/pull/11)) | Outer-iteration blend now matches section 6's documented "fully solved ↔ rigid" behavior. See DECISIONS.md §3a. |
 | 16 | `core/` modules called `bpy.context` directly (broke the "pure/testable" claim) | Closed | `cd0d1569` (Deployed, PR [#17](https://github.com/Magecatz/Sculpt_tool/pull/17)) | Depsgraph is now injected by callers; verified zero `bpy.context` under `sculpt_tool/core/`. |
 | 17 | No automated test suite | Closed | `3d1fc8bc` (Deployed, PR [#13](https://github.com/Magecatz/Sculpt_tool/pull/13)) | Headless Blender `unittest` harness under `tests/`; see section 9. |
+| 18 | No armature-driven initial posing / pose transfer (Stage 1) | **Open** (the tool's central missing stage) | `9df4bc00` anchor + roadmap `062cfedd`/`1b7b56eb`/`cfa7e4aa`/`812a0a6a`/`450bdee9`/`c342ccc2` (R1–R6) | The pipeline drapes static geometry only — it captures whatever pose the evaluated mesh already carries but has no step that *establishes* or *transfers* a pose from the target base onto the garment via the shared rig. So a garment and target base in different poses can't be bridged, and Mode B nearest-surface projection degrades to garbage across a pose gap (sleeves matched to the nearest torso surface, cuffs left floating), while the operator still reports success. This is the difference between the tool retargeting a garment to a new base (its actual purpose) and merely nudging an already-posed garment. Same "unvalidated input precondition" family as row 2. See DECISIONS.md §6. |
 
-**Note on rows 1, 2, 7-10:** these are long-standing v1 design-scope
-limitations rather than defects found in already-built behavior, and
-have never had dedicated tracking cards — they're recorded here as
-known, accepted gaps a future card could pick up, not regressions.
+**Note on rows 1, 2, 7-10, 18:** these are long-standing v1 design-scope
+limitations rather than defects found in already-built behavior. Rows
+1, 2, 7-10 have never had dedicated tracking cards — they're recorded
+here as known, accepted gaps a future card could pick up. Row 18 is the
+same shape (an assumed-but-unenforced precondition on the *input*, a
+close relative of row 2's overlap gap) but now has a card (`9df4bc00`),
+because it was surfaced as a concrete usability failure on real rigged
+assets rather than reasoned about in the abstract — see DECISIONS.md §6
+for that investigation and an honest calibration of how far the failure
+actually goes.
 
 **Note on row 3:** PR #19 has since merged and card `e6763cc5` is
 Deployed — this row was corrected during Review (2026-08-31) from the

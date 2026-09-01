@@ -665,3 +665,157 @@ with a faceless target and collision resolution off is not covered by
 the new regression tests. This gap is now live on `master` since PR #19
 has landed (it was previously moot, pre-merge); still open on the board
 as of this writing.
+
+---
+
+## 6. Armature / initial posing: the pipeline has no skeletal stage
+
+**Card `9df4bc00` (To-Do)** — "Tool is not using armature and bones for
+initial posing of the article of clothing and as such the tool is
+actively doing nothing productive." Filed by the user after a live
+run-the-tool-on-real-assets session ("Tool results on clothing/body
+combinations," 2026-09-01). This section is the Architect writeup behind
+ARCHITECTURE.md section 7 row 18, and an honest calibration of how far
+the complaint actually reaches — because part of it is real and part of
+it is the frustration of a session that spent a lot of effort chasing
+the wrong thing.
+
+### 6a. The finding, grounded in the code
+
+There is **no skeletal logic anywhere in the addon.** `grep -rni
+"armature\|bone\|pose\|skin\|deform" sculpt_tool/` returns only Pin-group
+vertex-group handling and unrelated prose in docstrings — zero references
+to armatures, bones, pose, or skin weights as a deformation input. The
+whole pipeline (bind → project → collision → smooth → bake) operates on
+**static geometry**: `core/binding.py` records, per garment vertex, a
+correspondence + offset against the source body's *evaluated, world-space*
+mesh; `core/solver.py` re-projects each garment vertex onto the target
+body's *evaluated* surface (Mode A nearest-vertex / Mode B nearest-surface
+BVH); collision pushes out of the body; smoothing relaxes. Nothing in that
+chain knows a skeleton exists.
+
+Crucially, the tool does not *ignore* pose at the mesh level — it reads
+the **evaluated** mesh, so whatever pose an Armature modifier currently
+produces is baked into the positions it captures. What it lacks is any
+step that *establishes*, *transfers*, or *matches* a pose. It assumes the
+garment is already posed to sit on its body (the same unenforced-input-
+precondition family as section 7 row 2's overlap gap) and, at fit time,
+drapes onto the target body's *current* surface by nearest-surface
+correspondence alone.
+
+### 6b. Why nearest-surface projection can't stand in for skinning
+
+Real clothing assets are authored **skinned to an armature**, and the
+garment-on-body pose is produced by the armature deform (matched bone
+transforms + skin weights), *then* refined by cloth-level fitting. The
+reference file the user supplied mid-session (`Example1.blend`) was
+exactly this: a single combined `Tech Outfit` mesh plus **two properly
+posed armatures** — `Armature` driving the body, `Armature.001` driving
+the outfit — with real non-identity bone rotations (Hips/Chest/Shoulder/
+Arm/Elbow/Wrist), arms in a relaxed stance rather than a T-pose.
+
+When the garment and target body are in *different* poses (or the tool is
+fed rest-pose meshes while the intended result is posed), nearest-surface
+projection is asked to do a job skinning is supposed to do first. On a
+T-pose body with an arm blown out sideways, the surface nearest a sleeve
+vertex is frequently the *torso*, not the arm — so the sleeve collapses
+onto the chest and the cuff is left floating. The fit pipeline **cannot
+recover this**: `project_*` only *repositions* the garment's existing
+vertices and adds no geometry; collision only pushes out of the body;
+smoothing only relaxes noise. None of them can carry fabric along a limb
+the way an armature deform does. So across a pose gap the tool produces a
+visibly broken drape *and reports `FINISHED` with no warning* — the same
+silent-success failure mode as the row 2 overlap gap.
+
+### 6c. Honest calibration — what the complaint gets right, and what it doesn't
+
+- **"Doing nothing productive" is overstated as literal truth.** In the
+  same session, the E-girl Tech Set (Tech top + Tech Pants) batch-fit
+  **cleanly** across all three real bodies (Egirl / Fantasy / Venus) in
+  one Bind + one Batch Fit call, torso and legs staying covered and the
+  silhouette adapting per body. The tool *is* productive when its
+  initial-pose-alignment precondition is already met. The defensible
+  version of the complaint is narrower and real: the tool offers **no
+  armature-driven way to reach that aligned state**, and for the common
+  real-world case (garment and body each skinned to a rig, in different
+  poses, or rest-vs-posed) it silently emits garbage.
+- **The specific floating-cuff render was NOT caused by missing pose —
+  do not attribute it to this card.** That thread's cuff gap was chased
+  through several wrong theories (import scale, an Armature-modifier
+  evaluation gap, needing to pose the rig) and each was ruled out: the
+  raw `Sweater by Vinuzhka` piece reproduces the gap under a verified
+  real T-pose, on its own source body, with an identity fit — and the
+  user ultimately confirmed the separated cuff/sleeve is the garment's
+  **intentional design**, not a fit failure. The armature/pose gap in
+  this section is the *general structural* finding the investigation
+  surfaced (a fully-rigged, fully-posed reference asset the tool has no
+  concept of), not the root cause of that one render.
+- **The "tool discarded the armature" symptom in that session was in the
+  test-harness import helper, not the addon.** The helper dropped the
+  Armature object on import and ran against the bare rest-pose mesh. That
+  is a harness bug, but it points at the same real addon-level gap: the
+  addon has no notion of a rig to preserve or use in the first place, so
+  nothing downstream would have used the armature even had the helper
+  kept it.
+
+### 6d. The tool's actual purpose (clarified by the user, 2026-09-01)
+
+The framing this gap sits inside, stated plainly so it isn't lost: every
+garment is authored for one specific rigged body — its **base**. The
+tool's whole purpose is to retarget a garment from its source base onto a
+*different* target base automatically — the thing the user did by hand in
+`Test_Items/Example1.blend` (Vinuzhka Tech Set, authored for `RP Female
+Base_Heeled Foot.fbx`, hand-fitted onto `vrbase_Egirl_Heeled Foot.fbx`).
+The intended pipeline is therefore two stages — **pose, then sculpt** —
+and only the sculpt stage exists today. See ARCHITECTURE.md's intro.
+
+### 6e. Bone-structure evidence (measured, `Test_Items/Body`)
+
+The four bodies were imported headless (Blender 5.2.1, `--factory-startup`)
+and their armatures dumped. The user's summary — "all body bone
+structures will be relatively the same except for maybe naming
+conventions" — holds, with the naming differences being the substantive
+part:
+
+| Rig family | Bones | Separator | Arm chain | Leg chain | Finger example |
+|---|---|---|---|---|---|
+| RP Female Base (+ Tech Set clothing rig, 89) | 84 | `.L`/`.R` | Arm / Elbow / Wrist | Leg / Knee / Foot | `Index Finger.L` |
+| vrbase Egirl / Fantasy (+ bodysuit rig, 91) | 66 | `_L`/`_R` | Arm_L / Elbow_L / Wrist_L | Leg_L / Knee_L / Foot_L | `Index Finger_L` |
+| Project Venus | 98 | `.L`/`.R` | Upper_Arm / Lower_Arm / Hand | Upper_Leg / Lower_Leg / Foot | `IndexFinger1.L` |
+
+All three share the same humanoid hierarchy (Hips → Spine → Chest →
+Shoulders→Arms→Hands + Neck/Head; Hips → Legs → Feet → Toes) plus
+differing helper bones (twist/jiggle/breast/butt), which is why bone
+counts diverge. The clothing rigs carry the same naming as their source
+base — Tech Set uses the dot/`Arm`/`Leg` convention of RP Female Base;
+`bodysuit` uses the underscore/`Arm_L` convention of the vrbase family.
+**Consequence for the fix:** matching bones between a garment rig and a
+target base rig cannot be naive string equality — it needs a canonical
+humanoid map that normalizes the separator, joint-name, and finger-name
+differences above. That mapping layer is roadmap card R2.
+
+### 6f. The decided fix and roadmap
+
+The direction is settled (user-directed): an **armature-driven Stage 1**
+that matches the two rigs' bones (normalizing naming) and transfers the
+target base's pose onto the garment via its own skin weights, before the
+existing sculpt stage refines the surface. Scoped across six board cards:
+
+- **R1** `062cfedd` (To-Do) — model source/target base rigs + target-base
+  picker (foundation).
+- **R2** `1b7b56eb` (To-Do) — canonical humanoid bone mapping across the
+  naming families in §6e.
+- **R4** `812a0a6a` (To-Do) — interim: refuse clearly on a gross
+  pose/position mismatch instead of reporting success (subsumes row 2).
+- **R3** `cfa7e4aa` (Backlog, needs R1+R2) — the pose-transfer stage
+  itself; the concrete fix for anchor card `9df4bc00`.
+- **R5** `450bdee9` (Backlog, needs R3) — wire pose→sculpt into
+  Fit/Batch as the end-to-end flow.
+- **R6** `c342ccc2` (Backlog, needs R3/R5) — real-asset retarget
+  regression (Tech Set → Egirl/Fantasy/Venus vs `Example1.blend`).
+
+Per section 9's standing rule this section stays qualitative: it records a
+design/usability finding and a plan, not measured numbers. Any
+quantitative claim a fix makes (e.g. "pose transfer reduces residual
+penetration by X on the rigged corpus") must arrive with its own
+reproducible test — that is precisely what R6 exists to provide.
