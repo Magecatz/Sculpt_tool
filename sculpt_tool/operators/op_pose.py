@@ -24,6 +24,21 @@ from . import op_bases
 from ..core import pose, rig, rig_map
 
 
+def set_armature_deform_visible(garment_obj, visible):
+    """Show/hide the garment's Armature modifier deformation, and report
+    whether any was changed. After a placement fit bakes the placed garment
+    into the Fitted Shape Key, the live Armature modifier is hidden so it
+    doesn't deform that bake a second time (roadmap R8 -- placement is
+    already captured in the key). Reversible (re-enable to get the rig back)."""
+    changed = False
+    for modifier in garment_obj.modifiers:
+        if modifier.type == 'ARMATURE':
+            modifier.show_viewport = visible
+            modifier.show_render = visible
+            changed = True
+    return changed
+
+
 def reset_pose(armature_obj):
     """Return every pose bone of ``armature_obj`` to rest (identity basis).
 

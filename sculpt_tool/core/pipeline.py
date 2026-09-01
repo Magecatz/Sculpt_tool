@@ -29,6 +29,8 @@ production caller and does that step itself with ``fit_once``'s output.
 
 from dataclasses import dataclass
 
+from mathutils import Vector
+
 from . import collision, geometry, smoothing, solver
 
 
@@ -157,6 +159,82 @@ def fit_once(garment_obj, target_body_obj, params, depsgraph, relax_ctx=None, ta
                 projection.anchor_normals,
                 target_ctx.bvh,
                 params.collision_margin,
+            )
+
+    return fitted
+
+
+def _nearest_anchors(positions, bvh):
+    """For each world position, the nearest point on ``bvh`` and its normal
+    -- the fresh surface correspondence a placed garment conforms against
+    (replacing the frozen bind-time anchor when the armature has already
+    placed the garment). A position with no hit keeps itself as its own
+    anchor (an up normal), so it's simply left where it is."""
+    anchor_positions = []
+    anchor_normals = []
+    for position in positions:
+        location, normal, index, _distance = bvh.find_nearest(position)
+        if index is None:
+            anchor_positions.append(position)
+            anchor_normals.append(Vector((0.0, 0.0, 1.0)))
+        else:
+            anchor_positions.append(location)
+            anchor_normals.append(normal)
+    return anchor_positions, anchor_normals
+
+
+def conform_placed(placed_positions, target_ctx, params, garment_obj):
+    """Conform an already-armature-PLACED garment to the target body (roadmap R8).
+
+    The armature stage (R7) has already moved, rotated, and scaled the
+    garment onto the target base, so -- unlike :func:`fit_once` -- this does
+    NOT re-project a frozen bind-time correspondence (which would ignore the
+    placement and shrink-wrap the garment). Instead it takes the garment's
+    already-placed world positions and only *cleans* them against the target:
+
+    1. **Collision resolution** pushes any placed vertex that ended up inside
+       the target body back out, using a FRESH nearest-surface anchor per
+       vertex derived from the placed position (not the source-body binding).
+    2. **Smoothing**, if enabled, relaxes noise -- with its rest edge lengths
+       measured from the PLACED mesh (not the garment's authored base mesh),
+       so a scaled placement is not dragged back toward its original,
+       unscaled size. A second collision pass follows, as in ``fit_once``.
+
+    Returns world positions ready to bake. The caller (``operators/
+    op_fit.py``) mutes the garment's Armature modifier around the bake so the
+    placement -- already baked into these positions -- isn't applied twice.
+
+    ``params.use_collision_resolution``/``smoothing_iterations`` gate the
+    passes exactly as in :func:`fit_once`; with both off this returns the
+    placed positions unchanged (a pure armature placement).
+    """
+    fitted = list(placed_positions)
+    needs_surface = params.use_collision_resolution or params.smoothing_iterations > 0
+    bvh = target_ctx.bvh if needs_surface else None
+
+    if params.use_collision_resolution:
+        anchor_positions, anchor_normals = _nearest_anchors(placed_positions, bvh)
+        fitted = collision.resolve_collisions(
+            fitted, anchor_positions, anchor_normals, bvh, params.collision_margin
+        )
+
+    if params.smoothing_iterations > 0:
+        neighbors = smoothing._build_adjacency(garment_obj.data)
+        pin_weights = smoothing.compute_pin_weights(garment_obj)
+        # Rest edge lengths from the PLACED mesh, so smoothing preserves the
+        # placed/scaled shape instead of restoring the authored base size.
+        placed_edges = [
+            (edge.vertices[0], edge.vertices[1],
+             (placed_positions[edge.vertices[1]] - placed_positions[edge.vertices[0]]).length)
+            for edge in garment_obj.data.edges
+        ]
+        fitted = smoothing.relax_positions(
+            fitted, neighbors, placed_edges, pin_weights, params.smoothing_iterations
+        )
+        if params.use_collision_resolution:
+            anchor_positions, anchor_normals = _nearest_anchors(placed_positions, bvh)
+            fitted = collision.resolve_collisions(
+                fitted, anchor_positions, anchor_normals, bvh, params.collision_margin
             )
 
     return fitted
