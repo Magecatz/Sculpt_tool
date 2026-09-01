@@ -170,6 +170,48 @@ def make_pin_group(obj, name, vertex_weights):
     return group
 
 
+def make_armature(name, bones, location=(0.0, 0.0, 0.0)):
+    """Build an Armature Object named ``name`` from a bone spec and link it.
+
+    ``bones`` is a list of ``(bone_name, head, tail, parent_name_or_None)``
+    tuples; ``head``/``tail`` are 3-tuples in armature-local space, and
+    ``parent_name`` (if given) must name an earlier bone in the list.
+    Returns the Armature Object (in Object mode). Used by the rig-awareness
+    tests (roadmap R1) to stand in for the real, un-checkinable rigged FBX
+    assets with a small synthetic humanoid-ish skeleton.
+    """
+    arm_data = bpy.data.armatures.new(name)
+    obj = bpy.data.objects.new(name, arm_data)
+    bpy.context.collection.objects.link(obj)
+
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    created = {}
+    for bone_name, head, tail, parent_name in bones:
+        edit_bone = arm_data.edit_bones.new(bone_name)
+        edit_bone.head = head
+        edit_bone.tail = tail
+        if parent_name is not None:
+            edit_bone.parent = created[parent_name]
+        created[bone_name] = edit_bone
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    obj.location = location
+    update_scene()
+    return obj
+
+
+def bind_mesh_to_armature(mesh_obj, armature_obj):
+    """Attach an Armature modifier on ``mesh_obj`` driven by
+    ``armature_obj`` (the normal way a skinned mesh is rigged), and return
+    the modifier. Does not create vertex-group skin weights -- callers that
+    need weights add them separately."""
+    modifier = mesh_obj.modifiers.new(name="Armature", type='ARMATURE')
+    modifier.object = armature_obj
+    update_scene()
+    return modifier
+
+
 def world_positions(obj):
     """World-space ``Vector`` position per vertex, in vertex-index order."""
     update_scene()

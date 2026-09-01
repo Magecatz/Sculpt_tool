@@ -29,6 +29,17 @@ iterations) unchanged per target.
 
 import bpy
 
+
+def _is_armature(self, obj):
+    """PointerProperty poll: restrict a rig picker to Armature objects.
+
+    Used by ``source_base_armature``/``target_base_armature`` below so the
+    UI's rig dropdowns only offer Armature objects, not every object in the
+    scene (roadmap R1 -- the "base" concept's source/target rig pickers).
+    """
+    return obj.type == 'ARMATURE'
+
+
 BIND_MODE_OVERRIDE_ITEMS = (
     ('AUTO', "Auto-Detect", "Choose Mode A or B automatically based on source/target body topology"),
     ('MODE_A', "Force Mode A", "Force same-topology (vertex-index) binding regardless of auto-detection"),
@@ -46,6 +57,38 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
         name="Target Body",
         description="Body mesh to fit the garment onto",
         type=bpy.types.Object,
+    )
+    # --- "Base" retargeting rigs (roadmap R1, card 062cfedd) ------------
+    # A "base" is a rigged body a garment is authored for (DECISIONS.md
+    # section 6d). These two pointers make the tool AWARE of the garment's
+    # source-base rig and the chosen target-base rig -- the foundation
+    # every later pose-transfer card (R2 bone mapping, R3 pose transfer)
+    # builds on. R1 only records/selects them; nothing here poses or
+    # matches bones yet. Auto-filled from the Source/Target Body's own
+    # Armature modifier by SCULPTTOOL_OT_detect_rigs (operators/
+    # op_bases.py), or picked by hand. Restricted to Armature objects via
+    # the module-level ``_is_armature`` poll.
+    source_base_armature: bpy.props.PointerProperty(
+        name="Source Base Rig",
+        description=(
+            "Armature of the base body this garment was authored for. The "
+            "garment is skinned to a rig sharing this base's bone-naming "
+            "convention. Auto-detected from the Source Body (or the garment "
+            "itself) by Detect Rigs; used by the pose-transfer stage"
+        ),
+        type=bpy.types.Object,
+        poll=_is_armature,
+    )
+    target_base_armature: bpy.props.PointerProperty(
+        name="Target Base Rig",
+        description=(
+            "Armature of the target base body to retarget the garment onto "
+            "-- its pose is what a later stage transfers onto the garment. "
+            "Auto-detected from the Target Body by Detect Rigs, or picked "
+            "by hand. Paired with Target Body as the target base"
+        ),
+        type=bpy.types.Object,
+        poll=_is_armature,
     )
     bind_mode_override: bpy.props.EnumProperty(
         name="Bind Mode",
