@@ -917,3 +917,104 @@ the hand fit closely, on a genuinely posed base. **Remaining:** girth
 (across-bone thickness) comes from the collision/fit passes, not the
 armature; surface smoothness depends on the smoothing pass. See
 ARCHITECTURE §3 step 0 and §7 row 18.
+
+## 7. Placement deformation fixes: rotation, offset-preserving conform, quality gate
+
+The R7/R8 placement stage shipped "validated" on aggregate metrics
+(centroid height, mean standoff, a lenient penetration ceiling) but real
+renders of the Tech Set retargeted onto Egirl were badly mangled: the
+jacket chest/torso crumpled, sleeves were noisy, and the pants' authored
+tech straps/pockets were torn into gashes. An investigation (2026-09-01,
+this session) isolated three independent causes and fixed them (A, B2, C).
+Every number below has a checked-in script behind it (§9 standing rule).
+
+### 7a. Fix A — placement rotation slammed absolute orientation
+
+`core/pose.compute_bone_placements` set each garment bone's pose matrix to
+the target bone's **absolute world orientation**. That is only correct when
+the two rigs share bone rest orientations; where they don't — differing
+roll/rest-frame conventions across rig families, worst on helper bones —
+it applied `R_target_rest · R_garment_rest⁻¹` as a spurious twist to the
+skinned region *even with the target at rest*. Measured (Tech Set → Egirl,
+`scratchpad` diagnostic): `Boob.L/R` **142.9°**, `Thumb 03` 54.6°, `Thumb`
+40.2° — the 143° breast-bone flip folded the jacket chest inside-out.
+Length-scales were all moderate (0.74–1.55), ruling scaling out.
+
+**Fix:** carry only the target's pose *delta* onto the garment bone's own
+rest orientation — `pose_delta = R_target_now · R_target_rest⁻¹`,
+`world_rot = pose_delta · R_garment_rest` — identity when the target is at
+rest, so a rest-pose retarget repositions/resizes without twisting. This is
+the same rest-orientation compensation `compute_pose_rotations` (R3) always
+applied, expressed in world space. Locked by
+`tests/test_placement.test_rest_orientation_difference_injects_no_twist`
+(two rigs identical but for a 90° bone roll; the mesh must not swing into Y
+— it did, ~0.10, under the old code).
+
+### 7b. Fix B2 — conform shrink-wrapped loose geometry
+
+The old `conform_placed` only *cleaned* the placed positions (collision
+push-out + smoothing + boundary relax). For loose geometry standing off the
+body (open jacket panels, straps, rolled cuffs) that pulled everything onto
+the body surface: collision's anchor-based tunneling snap (§1a's known
+false-positive) flattened straps onto the thigh, and per-vertex push-to-
+margin + smoothing shrink-wrapped the surface. Isolating renders (placement
+only vs placement+surface) showed the surface passes *added* the crumpling.
+
+**Fix:** `conform_placed` now does **offset-preserving reprojection**. For
+each placed vertex it finds a fresh nearest-surface correspondence on the
+target (good *because* placement already put each region near the right
+body part) and reapplies the garment's authored `normal_offset` along that
+surface's normal — blended against the placed position by authored
+looseness (`_REPROJECT_NEAR_FRAC`/`_REPROJECT_FAR_FRAC` of the body
+diagonal): tight vertices fully reproject (conform to the new girth, stable
+correspondence), loose vertices keep their armature-placed position
+(reprojecting a surface far from the body scatters the rim). In-plane
+tangent residuals are dropped (their bind-time direction has no stable
+meaning in the target frame; keeping them adds scatter). Optional
+collision/smoothing then relax residual noise. This also closes the former
+R8 coupling where projection ignored the placement.
+
+Measured looseness preservation (median fitted/authored standoff over loose
+vertices, `scratchpad/measure_looseness.py`; real Tech Set sweater): **0.27
+before → 0.54 after** on Egirl (0.56 Fantasy, 0.89 Venus). The pants (tight
+joggers) have no vertex loose enough to register — correctly n/a. Smoothing
+still helps *after* B2 (it now has a clean surface to relax rather than a
+collapse to fight): the raw (0-iteration) sweater is visibly rougher than
+at 8 iterations, and 8 is what `tests/retarget_repro.py` now uses.
+
+### 7c. Fix C — a surface-quality regression gate
+
+The failure passed every existing test because centroid/mean-distance/
+penetration metrics are blind to local mangling. `core/quality.py` adds two
+metrics (pure data, `tests/test_quality.py`):
+
+- **`edge_distortion`** — per-edge length ratio normalized by the median
+  (which absorbs the placement's overall scaling); the fraction of edges
+  distorted >2× flags stretch/shrink/scatter. Honest limitation: it is
+  blind to a *rigid* fold (rigid rotation preserves edge lengths), and on a
+  loose OPEN garment an over-smoothed collapse can score as low as a clean
+  fit — so it is REPORTED in `retarget_repro.py` (tracking) but not gated
+  there.
+- **`looseness_preservation`** — the 7b metric, and the real B2 gate:
+  `retarget_repro.py` fails if a piece with a genuine loose region drops
+  below 0.40 (measured 0.54–0.89 post-fix, ~0.27 pre-fix).
+
+The rigid-twist bug (fix A) is locked decisively by the placement twist
+test in 7a, not by the distortion metric. Together: the placement test
+guards A, the looseness floor guards B2, and the ground-truth distance in
+`retarget_repro.py` (retargeted Top 0.46% of body-diagonal from the manual
+`Example1.blend` fit vs the manual's own 0.67%) tracks overall fidelity.
+
+### 7d. Cleanup (fix D)
+
+- `OT_fit_garment` and `OT_batch_fit` duplicated the place→read→align→
+  conform sequence once the placement path landed. Extracted to
+  `operators/_fit_common.place_and_conform` (an underscore helper module,
+  not `op_bases`, to avoid the `op_pose`→`op_bases` import cycle); both
+  operators now call it, honoring ARCHITECTURE §8's "no batch-specific
+  solver logic" literally. Behavior-preserving (full suite + real-asset
+  regression identical before/after).
+- The `renders/` dev tooling collapsed from ~17 one-off scripts
+  (`render_r1`–`r9`, `*_fix`, `variants`, `combos`, `views`, `closeups`)
+  into one parametric `renders/render.py` (`views` / `combos` modes) plus
+  `renderlib.py`.
