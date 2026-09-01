@@ -81,8 +81,8 @@ deterministic by construction, not by an extra guard here.
 
 import bpy
 
-from . import _shapekeys
-from ..core import alignment, geometry, pipeline, smoothing, storage
+from . import _shapekeys, op_bases, op_pose
+from ..core import alignment, geometry, pipeline, rig, smoothing, storage
 
 # Shape key name prefix for a batch target's own output -- see module
 # docstring's "Output naming" section. Built from storage.
@@ -203,16 +203,19 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
         # per-garment invariant (constant across the batch's targets), so
         # they're computed once here, not once per target -- same hoisting
         # rationale as relax_ctx / matrix_inverse above.
+        # Roadmap R5 -- pose transfer per target base. Each target body in
+        # the collection has its own rig; the garment is posed onto that
+        # rig's pose before its fit (reset to rest first, so targets don't
+        # accumulate). A no-op for a target base at the garment's pose.
+        auto_pose = getattr(settings, "auto_pose_transfer", True)
+        garment_arm = op_bases.garment_rig(garment_obj, settings) if auto_pose else None
+        pose_overrides = [
+            (o.source_bone, o.target_bone)
+            for o in getattr(settings, "bone_map_overrides", ())
+            if o.source_bone
+        ]
+
         check_alignment = not getattr(settings, "skip_alignment_check", False)
-        garment_positions = None
-        if check_alignment:
-            # Muted so a re-run's own stacked Fitted_<target> bakes aren't
-            # read back in as the garment's position (see _shapekeys).
-            with _shapekeys.muted_addon_output(context, garment_obj):
-                align_depsgraph = context.evaluated_depsgraph_get()
-                garment_positions, _ = geometry.world_space_positions_and_normals(
-                    garment_obj, align_depsgraph
-                )
 
         successes = []
         failures = []
@@ -232,7 +235,22 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
                     )
                     continue
 
+                # Stage 0: pose the garment onto THIS target base's rig.
+                if garment_arm is not None:
+                    target_rig = rig.deforming_armature(target_obj)
+                    if target_rig is not None:
+                        op_pose.pose_garment_onto_rig(
+                            context, garment_arm, target_rig, pose_overrides
+                        )
+
                 if check_alignment:
+                    # Read the (now-posed) garment, muted so a re-run's own
+                    # stacked Fitted_<target> bakes aren't read back in.
+                    with _shapekeys.muted_addon_output(context, garment_obj):
+                        align_depsgraph = context.evaluated_depsgraph_get()
+                        garment_positions, _ = geometry.world_space_positions_and_normals(
+                            garment_obj, align_depsgraph
+                        )
                     report = alignment.check_against_body(
                         garment_positions, target_ctx,
                         label=f"target body '{target_obj.name}'",

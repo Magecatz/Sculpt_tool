@@ -187,6 +187,17 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
         description="Result of the last Compute Bone Map run (read-only)",
         default="",
     )
+    auto_pose_transfer: bpy.props.BoolProperty(
+        name="Auto Pose Transfer",
+        description=(
+            "Before fitting, automatically pose the garment onto the target "
+            "base via the canonical bone map (roadmap R5 -- pose is stage 0 "
+            "of the pipeline). Runs only when a garment rig and a target-base "
+            "rig are both present; a no-op when the target base is already in "
+            "the garment's pose. Batch poses per target base"
+        ),
+        default=True,
+    )
     skip_alignment_check: bpy.props.BoolProperty(
         name="Skip Alignment Check",
         description=(

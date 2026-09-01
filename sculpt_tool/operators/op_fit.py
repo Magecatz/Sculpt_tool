@@ -1,8 +1,17 @@
 """OT_fit_garment.
 
-Runs the full fit pipeline (ARCHITECTURE.md section 3, steps 1-4) against
-the active garment's declared Target Body (``obj.sculpt_tool.
-target_body``). The pipeline sequence itself — project, then (when
+Runs the full fit pipeline (ARCHITECTURE.md section 3) against the active
+garment's declared Target Body (``obj.sculpt_tool.target_body``).
+
+Roadmap R5 adds **stage 0**: when ``auto_pose_transfer`` is on and both a
+garment rig and a target-base rig are present, the garment is first posed
+onto the target base via the canonical bone map (``operators/op_pose.py``'s
+``pose_garment_onto_rig``) so gross limb placement happens before the
+surface fit. This is a no-op when the target base is already in the
+garment's pose (identity transfer), so the co-posed happy path is
+unchanged.
+
+The surface pipeline itself — project, then (when
 ``obj.sculpt_tool.use_collision_resolution``) collision resolution, then
 (when ``obj.sculpt_tool.smoothing_iterations > 0``) pin-weighted
 smoothing, then a second collision pass if both ran — now lives in
@@ -22,7 +31,7 @@ data is never touched.
 
 import bpy
 
-from . import _shapekeys
+from . import _shapekeys, op_bases, op_pose
 from ..core import alignment, geometry, pipeline, storage
 
 # The single source of truth for this name is core.storage
@@ -71,6 +80,22 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
                 {'ERROR'}, "Target Body must be a different object from the garment."
             )
             return {'CANCELLED'}
+
+        # Roadmap R5 -- stage 0: pose the garment onto the target base via
+        # the canonical bone map before the surface fit, when both a garment
+        # rig and the target base rig are present. A no-op when the target
+        # base is already in the garment's pose (identity transfer), so the
+        # co-posed happy path is unchanged.
+        if getattr(settings, "auto_pose_transfer", True):
+            garment_arm = op_bases.garment_rig(garment_obj, settings)
+            target_arm = getattr(settings, "target_base_armature", None)
+            if garment_arm is not None and target_arm is not None:
+                overrides = [
+                    (o.source_bone, o.target_bone)
+                    for o in getattr(settings, "bone_map_overrides", ())
+                    if o.source_bone
+                ]
+                op_pose.pose_garment_onto_rig(context, garment_arm, target_arm, overrides)
 
         params = pipeline.FitParams(
             offset_scale=getattr(settings, "offset_scale", 1.0),

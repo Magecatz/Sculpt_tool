@@ -14,9 +14,47 @@ be run and inspected on its own.
 """
 
 import bpy
+from mathutils import Quaternion, Vector
 
 from . import op_bases
-from ..core import pose
+from ..core import pose, rig, rig_map
+
+
+def reset_pose(armature_obj):
+    """Return every pose bone of ``armature_obj`` to rest (identity basis).
+
+    Called before applying a transferred pose so a previous run (or, in a
+    batch, a previous target base) doesn't linger -- each pose transfer
+    starts from the garment's authored rest, making the result idempotent
+    and per-target-correct."""
+    for pose_bone in armature_obj.pose.bones:
+        pose_bone.rotation_mode = 'QUATERNION'
+        pose_bone.rotation_quaternion = Quaternion()
+        pose_bone.location = Vector((0.0, 0.0, 0.0))
+        pose_bone.scale = Vector((1.0, 1.0, 1.0))
+
+
+def pose_garment_onto_rig(context, garment_arm, target_arm, overrides=()):
+    """Pose ``garment_arm`` onto ``target_arm``'s current pose via the R2
+    canonical bone map, resetting to rest first. Returns the number of
+    bones posed (0 if no shared bones resolve). Shared by the standalone
+    Pose operator and the Fit/Batch stage-0 integration (roadmap R5)."""
+    bone_map = rig_map.build_bone_map(
+        rig.bone_names(garment_arm), rig.bone_names(target_arm), overrides=overrides
+    )
+    rotations = pose.compute_pose_rotations(garment_arm, target_arm, bone_map.as_pairs())
+
+    reset_pose(garment_arm)
+    posed = 0
+    for bone_name, quaternion in rotations.items():
+        pose_bone = garment_arm.pose.bones.get(bone_name)
+        if pose_bone is None:
+            continue
+        pose_bone.rotation_mode = 'QUATERNION'
+        pose_bone.rotation_quaternion = quaternion
+        posed += 1
+    context.view_layer.update()
+    return posed
 
 
 class SCULPTTOOL_OT_pose_to_target(bpy.types.Operator):
@@ -56,31 +94,19 @@ class SCULPTTOOL_OT_pose_to_target(bpy.types.Operator):
             self.report({'ERROR'}, "No Target Base Rig set (run Detect Rigs, or pick one).")
             return {'CANCELLED'}
 
-        bone_map, reason = op_bases.compute_garment_to_target_map(garment_obj, settings)
-        if bone_map is None:
-            self.report({'ERROR'}, f"Cannot pose: {reason}.")
-            return {'CANCELLED'}
-
-        pairs = bone_map.as_pairs()
-        rotations = pose.compute_pose_rotations(garment_arm, target_arm, pairs)
-        if not rotations:
+        overrides = [
+            (o.source_bone, o.target_bone)
+            for o in getattr(settings, "bone_map_overrides", ())
+            if o.source_bone
+        ]
+        posed = pose_garment_onto_rig(context, garment_arm, target_arm, overrides)
+        if not posed:
             self.report(
                 {'WARNING'},
                 "Pose transfer resolved no shared bones to pose -- check the "
                 "bone map (Compute Bone Map).",
             )
             return {'CANCELLED'}
-
-        posed = 0
-        for bone_name, quaternion in rotations.items():
-            garment_pose_bone = garment_arm.pose.bones.get(bone_name)
-            if garment_pose_bone is None:
-                continue
-            garment_pose_bone.rotation_mode = 'QUATERNION'
-            garment_pose_bone.rotation_quaternion = quaternion
-            posed += 1
-
-        context.view_layer.update()
 
         self.report(
             {'INFO'},

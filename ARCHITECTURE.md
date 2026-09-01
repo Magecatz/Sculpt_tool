@@ -91,20 +91,21 @@ The pipeline runs in two phases:
   many bodies" goal without also automating cage generation, which is a
   harder problem than the projection-based approach below. Not pursued
   for v1.
-- **Armature-driven initial posing as a pre-stage** — *now the planned
-  Stage 1 (see the intro), not a rejected alternative.* Transfer the
-  target base's pose onto the garment through the two rigs' shared
-  skeleton (bone-name-matched, normalizing naming differences across rig
-  families) and the garment's own skin weights, before the
-  surface-projection refinement runs. This is how a real clothing
-  pipeline gets a garment *grossly* into place — the skeleton carries the
-  fabric along each limb — after which the sculpt stage only refines the
-  drape. The tool as-built deliberately does **not** do this yet: it
-  assumes the garment is already posed to match its base and treats "get
-  it into pose" as the user's responsibility, reading only the evaluated
-  (already-posed, if at all) mesh. That assumption is unenforced and
-  silently wrong when it doesn't hold. Scoped across roadmap cards R1–R6
-  (anchor card `9df4bc00`); see section 7 row 18 and DECISIONS.md §6.
+- **Armature-driven initial posing as a pre-stage** — *now Stage 1 (see
+  the intro and section 3 step 0), implemented, not a rejected
+  alternative.* Transfers the target base's pose onto the garment through
+  the two rigs' shared skeleton (bone-name-matched via `core/rig_map.py`,
+  normalizing naming differences across rig families) and the garment's own
+  skin weights, before the surface-projection refinement runs. This is how
+  a real clothing pipeline gets a garment *grossly* into place — the
+  skeleton carries the fabric along each limb — after which the sculpt
+  stage refines the drape. Built and wired as the fit's stage 0 across
+  roadmap cards R1–R5 (`core/rig.py`, `core/rig_map.py`, `core/pose.py`,
+  `operators/op_pose.py`; anchor card `9df4bc00`). One remaining coupling
+  keeps this from being a *complete* retarget onto a non-rest base — the
+  surface projection still uses the frozen bind-time correspondence rather
+  than re-deriving it from the posed garment — tracked as a follow-up; see
+  section 3 step 0, section 7 row 18, and DECISIONS.md §6.
 
 The chosen approach reuses Blender's low-level geometry primitives
 (`BVHTree` nearest-surface queries, barycentric coordinates,
@@ -189,6 +190,24 @@ writeup of all three, and section 7 row 11 for current status):**
 
 ## 3. Fit pipeline (applied per target body)
 
+0. **Pose transfer (Stage 1 / stage 0 of the fit)** — when the garment and
+   the target base are both rigged and `auto_pose_transfer` is on, the
+   garment's own armature is first posed to match the target base's pose,
+   bone by bone through the canonical humanoid bone map (`core/rig_map.py`),
+   with the garment deforming through its own skin weights. This is the
+   gross skeletal placement that carries each sleeve onto the matching arm,
+   each leg onto the matching leg, before the surface steps below refine the
+   drape (roadmap R1–R5; `core/pose.py`, `operators/op_pose.py`). It is a
+   no-op when the target base is already in the garment's pose (identity
+   transfer), so a co-posed garment/base pair is unchanged. Batch runs this
+   per target base. **Current boundary (tracked follow-up):** the pose
+   places the garment's mesh; the surface **Project** step below still
+   re-evaluates the *frozen bind-time* correspondence (§2) rather than
+   re-deriving it from the posed garment, and a garment with a live posed
+   Armature modifier double-transforms the baked Shape Key — so a *correct*
+   fit onto a genuinely non-rest target base needs the projection to consume
+   the posed garment (a fresh correspondence) and the bake to account for
+   the armature. See DECISIONS.md §6 and the tracking card noted in §7 row 18.
 1. **Project** — re-evaluate each garment vertex's stored binding against
    the target body's current BVH/vertex positions → raw fitted position.
 2. **Collision resolution** — BVH-based penetration test against the
@@ -381,7 +400,7 @@ broken," not the evidence for it.
 | 15 | Partial pin-weight blend was non-linear (0.76x-0.96x instead of ~weight) | Closed | `1638a2d4` (Deployed, PR [#11](https://github.com/Magecatz/Sculpt_tool/pull/11)) | Outer-iteration blend now matches section 6's documented "fully solved ↔ rigid" behavior. See DECISIONS.md §3a. |
 | 16 | `core/` modules called `bpy.context` directly (broke the "pure/testable" claim) | Closed | `cd0d1569` (Deployed, PR [#17](https://github.com/Magecatz/Sculpt_tool/pull/17)) | Depsgraph is now injected by callers; verified zero `bpy.context` under `sculpt_tool/core/`. |
 | 17 | No automated test suite | Closed | `3d1fc8bc` (Deployed, PR [#13](https://github.com/Magecatz/Sculpt_tool/pull/13)) | Headless Blender `unittest` harness under `tests/`; see section 9. |
-| 18 | No armature-driven initial posing / pose transfer (Stage 1) | **Open** (the tool's central missing stage) | `9df4bc00` anchor + roadmap `062cfedd`/`1b7b56eb`/`cfa7e4aa`/`812a0a6a`/`450bdee9`/`c342ccc2` (R1–R6) | The pipeline drapes static geometry only — it captures whatever pose the evaluated mesh already carries but has no step that *establishes* or *transfers* a pose from the target base onto the garment via the shared rig. So a garment and target base in different poses can't be bridged, and Mode B nearest-surface projection degrades to garbage across a pose gap (sleeves matched to the nearest torso surface, cuffs left floating), while the operator still reports success. This is the difference between the tool retargeting a garment to a new base (its actual purpose) and merely nudging an already-posed garment. Same "unvalidated input precondition" family as row 2. See DECISIONS.md §6. |
+| 18 | No armature-driven initial posing / pose transfer (Stage 1) | **Implemented** (stage present + wired; one coupling remains) | R1–R5 deployed: `062cfedd`/`1b7b56eb`/`cfa7e4aa`/`812a0a6a`/`450bdee9` (PRs #25–#28 + R5) · residual `a541e4cb` (Backlog) | Stage 1 now exists and is wired as the fit's stage 0: `core/rig.py` (rig awareness) + `core/rig_map.py` (canonical bone mapping across naming families) + `core/pose.py`/`op_pose.py` (pose transfer) pose the garment onto the target base via the shared rig before the surface fit; `op_fit`/`op_batch` run it automatically (`auto_pose_transfer`), and R4's alignment guard (`812a0a6a`) refuses a gross mismatch instead of silently succeeding. Validated on real assets (Tech Set → arms-down Egirl: sleeves follow the arms). **Residual (card `a541e4cb`):** the surface projection still re-evaluates the *frozen* bind-time correspondence rather than re-deriving it from the posed garment, and a live posed Armature modifier double-transforms the bake — so a *fully correct* fit onto a genuinely non-rest target base is the remaining work. A no-op on the co-posed corpus (all rest-pose), which fits correctly today. See DECISIONS.md §6 and section 3 step 0. |
 
 **Note on rows 1, 2, 7-10, 18:** these are long-standing v1 design-scope
 limitations rather than defects found in already-built behavior. Rows
@@ -404,11 +423,19 @@ reached Review. See DECISIONS.md §5.
 
 `OT_batch_fit` is the intended batch entry point: point it at a
 Collection of target body objects and it runs the full per-target
-pipeline (project → collision → smooth → bake) once per object, writing
-one `Fitted` shape key per target. It is a thin orchestration layer over
-the same `core/` modules the single-target `OT_fit_garment` uses — no
-separate batch-specific solver logic — so correctness fixes to the core
-pipeline apply to both paths automatically.
+pipeline (pose → project → collision → smooth → bake) once per object,
+writing one `Fitted_<target>` shape key per target. It is a thin
+orchestration layer over the same `core/` modules the single-target
+`OT_fit_garment` uses — no separate batch-specific solver logic — so
+correctness fixes to the core pipeline apply to both paths automatically.
+
+As of roadmap R5, batch also runs the pose-transfer stage 0 (section 3
+step 0) **per target base**: for each target body it resolves that body's
+own rig, resets the garment armature to rest, and poses the garment onto
+that target base before its fit — so one garment retargets across a
+Collection of differently-posed bases in a single run, one posed-and-
+fitted shape key each. A no-op for a target base already in the garment's
+pose (the whole rest-pose corpus), so batch output there is unchanged.
 
 The project/collision/smooth sequence itself now lives in
 `core/pipeline.py::fit_once(garment, target, params, depsgraph) -> fitted
