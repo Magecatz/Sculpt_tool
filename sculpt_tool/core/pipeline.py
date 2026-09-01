@@ -33,6 +33,11 @@ from mathutils import Vector
 
 from . import collision, geometry, smoothing, solver
 
+# Boundary-loop straighten passes applied to a placed garment's open edges
+# in conform_placed (see there). A few is enough to remove collision-rim
+# spikes with negligible rim shrink.
+_BOUNDARY_RELAX_ITERATIONS = 5
+
 
 @dataclass
 class FitParams:
@@ -236,5 +241,25 @@ def conform_placed(placed_positions, target_ctx, params, garment_obj):
             fitted = collision.resolve_collisions(
                 fitted, anchor_positions, anchor_normals, bvh, params.collision_margin
             )
+
+    # Straighten ragged open-edge rims (necklines/hems/cuffs/cutouts) that
+    # per-vertex collision push-out leaves jagged -- a boundary-only
+    # Laplacian along the free-edge loops, then a final collision clear so
+    # nothing the straighten nudged is left inside the body. Only runs when
+    # the garment actually has open boundaries and a surface to clear
+    # against (open-edge boundary card).
+    if needs_surface:
+        boundary_neighbors = smoothing.boundary_vertex_neighbors(garment_obj.data)
+        if any(boundary_neighbors):
+            pin_weights = smoothing.compute_pin_weights(garment_obj)
+            fitted = smoothing.relax_boundary_positions(
+                fitted, boundary_neighbors, pin_weights,
+                iterations=_BOUNDARY_RELAX_ITERATIONS,
+            )
+            if params.use_collision_resolution:
+                anchor_positions, anchor_normals = _nearest_anchors(fitted, bvh)
+                fitted = collision.resolve_collisions(
+                    fitted, anchor_positions, anchor_normals, bvh, params.collision_margin
+                )
 
     return fitted

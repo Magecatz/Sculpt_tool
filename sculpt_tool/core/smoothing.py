@@ -612,3 +612,72 @@ def relax_positions(positions, neighbors, original_edges, pin_weights=None, iter
         ]
 
     return current
+
+
+def boundary_vertex_neighbors(mesh):
+    """Per-vertex list of a vertex's neighbors ALONG THE OPEN BOUNDARY only.
+
+    An open-boundary edge is one used by exactly one polygon (a garment's
+    free hem/neckline/cuff/cutout edge). This returns, for each vertex, the
+    other endpoints of the boundary edges it belongs to -- normally two,
+    forming the boundary loop -- and an empty list for every interior
+    vertex. Used by :func:`relax_boundary_positions` to straighten the
+    ragged rims that per-vertex collision push-out leaves on those free
+    edges (roadmap: open-edge boundary card).
+
+    Pure topology (no positions, no ``bpy.context``); takes a ``bpy.types.
+    Mesh`` and reads ``polygons``/``edge_keys`` only.
+    """
+    from collections import defaultdict
+
+    edge_use = defaultdict(int)
+    for polygon in mesh.polygons:
+        for edge_key in polygon.edge_keys:
+            edge_use[edge_key] += 1
+
+    neighbors = [[] for _ in range(len(mesh.vertices))]
+    for (a, b), count in edge_use.items():
+        if count == 1:  # boundary edge
+            neighbors[a].append(b)
+            neighbors[b].append(a)
+    return neighbors
+
+
+def relax_boundary_positions(positions, boundary_neighbors, pin_weights=None,
+                             iterations=4, factor=0.5):
+    """Laplacian-smooth open-boundary vertices ALONG their boundary loop.
+
+    For each boundary vertex (one with non-empty ``boundary_neighbors``),
+    each iteration nudges it a ``factor`` fraction toward the average of its
+    boundary neighbors, scaled by ``(1 - pin_weight)`` so pinned regions
+    don't move. Interior vertices (empty neighbor list) are never touched.
+    This targets the jagged/spiky/frilly rims that per-vertex collision
+    push-out leaves on a garment's free edges, without disturbing the
+    interior surface the main relax pass already handled.
+
+    A boundary loop is 1-D, so this is a mild, shrink-limited straighten
+    (a vertex only moves toward the midpoint of its two rim neighbors); a
+    few iterations remove spikes with negligible rim shrink. Pure logic on
+    plain data (``Vector`` positions + neighbor lists), unit-testable with
+    synthetic input like :func:`relax_positions`.
+    """
+    vertex_count = len(positions)
+    if pin_weights is None:
+        pin_weights = [0.0] * vertex_count
+
+    current = list(positions)
+    for _ in range(iterations):
+        updated = list(current)
+        for i, neighbors in enumerate(boundary_neighbors):
+            if not neighbors:
+                continue
+            weight = 1.0 - min(max(pin_weights[i], 0.0), 1.0)
+            if weight <= 0.0:
+                continue
+            average = Vector((0.0, 0.0, 0.0))
+            for n in neighbors:
+                average += current[n]
+            average /= len(neighbors)
+            updated[i] = current[i].lerp(average, factor * weight)
+        current = updated
+    return current
