@@ -31,8 +31,8 @@ data is never touched.
 
 import bpy
 
-from . import _shapekeys, op_bases, op_pose
-from ..core import alignment, geometry, pipeline, storage
+from . import _fit_common, op_bases, op_pose
+from ..core import geometry, pipeline, storage
 
 # The single source of truth for this name is core.storage
 # (FITTED_SHAPE_KEY_NAME) -- operators/op_bind.py also needs it, to mute
@@ -83,28 +83,22 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
 
         # Roadmap R5/R7/R8 -- stage 0: PLACE the garment onto the target base
         # (position + rotation + length-scale) via the canonical bone map,
-        # when both a garment rig and the target base rig are present. A
-        # no-op when the two skeletons already coincide, so a co-posed,
-        # same-proportion pair is unchanged. When placement runs, the surface
-        # fit conforms the PLACED garment (see below) instead of re-projecting
-        # the frozen bind-time correspondence.
-        garment_arm = op_bases.garment_rig(garment_obj, settings)
-        target_arm = getattr(settings, "target_base_armature", None)
-        placement_active = (
-            getattr(settings, "auto_pose_transfer", True)
-            and garment_arm is not None
-            and target_arm is not None
+        # when both a garment rig and the target base rig are present and
+        # auto-pose is on. Placement + alignment guard + conform is the exact
+        # sequence Batch runs per target, so it lives in
+        # ``_fit_common.place_and_conform`` (see that module). A no-op when the
+        # two skeletons already coincide, so a co-posed pair is unchanged.
+        garment_arm = (
+            op_bases.garment_rig(garment_obj, settings)
+            if getattr(settings, "auto_pose_transfer", True)
+            else None
         )
-        if placement_active:
-            # Ensure the Armature deform is live before placing (a prior
-            # placement fit may have muted it -- see the post-bake step).
-            op_pose.set_armature_deform_visible(garment_obj, True)
-            overrides = [
-                (o.source_bone, o.target_bone)
-                for o in getattr(settings, "bone_map_overrides", ())
-                if o.source_bone
-            ]
-            op_pose.place_garment_onto_rig(context, garment_arm, target_arm, overrides)
+        target_arm = getattr(settings, "target_base_armature", None)
+        overrides = [
+            (o.source_bone, o.target_bone)
+            for o in getattr(settings, "bone_map_overrides", ())
+            if o.source_bone
+        ]
 
         params = pipeline.FitParams(
             offset_scale=getattr(settings, "offset_scale", 1.0),
@@ -123,35 +117,15 @@ class SCULPTTOOL_OT_fit_garment(bpy.types.Operator):
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
 
-        # The garment's current world positions (placed / posed), with this
-        # add-on's own Fitted* bakes muted so a re-fit doesn't read its own
-        # output. Used for the alignment guard and -- in the placement path
-        # -- as the very mesh the surface fit conforms.
-        with _shapekeys.muted_addon_output(context, garment_obj):
-            depsgraph = context.evaluated_depsgraph_get()
-            garment_positions, _ = geometry.world_space_positions_and_normals(
-                garment_obj, depsgraph
-            )
-
-        if not getattr(settings, "skip_alignment_check", False):
-            report = alignment.check_against_body(
-                garment_positions, target_ctx, label=f"target body '{target_body_obj.name}'"
-            )
-            if not report.aligned:
-                self.report({'ERROR'}, report.reason)
-                return {'CANCELLED'}
-
         try:
-            if placement_active:
-                # Conform the already-placed garment (collision/smooth on the
-                # placed mesh), not the frozen bind-time projection.
-                fitted_world = pipeline.conform_placed(
-                    garment_positions, target_ctx, params, garment_obj
-                )
-            else:
-                fitted_world = pipeline.fit_once(
-                    garment_obj, target_body_obj, params, depsgraph, target_ctx=target_ctx
-                )
+            fitted_world, placement_active = _fit_common.place_and_conform(
+                context, garment_obj, target_body_obj, target_ctx, params,
+                garment_arm, target_arm, overrides,
+                check_alignment=not getattr(settings, "skip_alignment_check", False),
+            )
+        except _fit_common.AlignmentRejected as exc:
+            self.report({'ERROR'}, exc.reason)
+            return {'CANCELLED'}
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}

@@ -203,16 +203,34 @@ writeup of all three, and section 7 row 11 for current status):**
    already coincide, so a co-posed same-proportion pair is unchanged. Batch
    places per target base.
 
+   The per-bone rotation is **rest-orientation-compensated** (fix A,
+   DECISIONS.md §7): placement carries only the target's pose *delta* onto
+   each garment bone's own rest orientation, so a rest-pose target injects
+   no twist. An earlier version slammed the target bone's absolute
+   orientation on instead, which twisted skinned regions by up to ~143°
+   wherever the two rigs' rest frames differed (breast/thumb/toe helpers
+   worst) — the dominant cause of the mangled early renders.
+
    When placement runs, the surface steps below **conform the placed
-   garment** (`core/pipeline.conform_placed`, roadmap R8) rather than
-   re-projecting the frozen bind-time correspondence: fresh nearest-surface
-   anchors from the placed positions, collision push-out, and (if enabled)
-   smoothing whose rest edge lengths come from the *placed* mesh so a scaled
-   placement isn't shrunk back. The operator bakes the result and hides the
-   garment's live Armature modifier so the placement — already in the bake —
-   isn't applied twice. **Remaining:** girth (across-bone thickness) is not
-   driven by the armature; the collision/fit passes handle it. See
-   DECISIONS.md §6 and §7 row 18.
+   garment** (`core/pipeline.conform_placed`, roadmap R8 + fix B2). This is
+   an **offset-preserving reprojection**: for each placed vertex it takes a
+   *fresh* nearest-surface correspondence on the target (a good match
+   precisely because placement already put each region near the right body
+   part) and reapplies the garment's **authored** body-relative standoff
+   (the binding's stored `normal_offset`) there — blended against the placed
+   position by how loose the vertex was authored, so loose geometry (open
+   panels, straps, rolled cuffs) keeps its silhouette instead of being
+   shrink-wrapped flat, while tight geometry conforms to the new body's
+   girth. Optional collision + smoothing then relax residual noise (rest
+   edge lengths from the *placed* mesh so a scaled placement isn't shrunk
+   back), and a boundary straighten cleans open rims. The operator bakes the
+   result and hides the garment's live Armature modifier so the placement —
+   already in the bake — isn't applied twice. This closes the former
+   coupling where the surface projection ignored the placement and re-used
+   the frozen bind-time correspondence. **Remaining:** the offset reapply
+   uses the target surface normal only (in-plane tangent residuals dropped
+   for stability); loose open boundaries still carry some residual
+   distortion. See DECISIONS.md §6–§7 and §7 row 18.
 1. **Project** — re-evaluate each garment vertex's stored binding against
    the target body's current BVH/vertex positions → raw fitted position.
 2. **Collision resolution** — BVH-based penetration test against the
@@ -265,7 +283,10 @@ didn't, since there is then nothing new for it to re-check).
   - `OT_fit_garment` — runs the fit pipeline (project → collision →
     smooth → bake) against a chosen target body.
   - `OT_batch_fit` — runs `OT_fit_garment`'s pipeline once per object in
-    a target Collection, producing one fitted output per target body.
+    a target Collection, producing one fitted output per target body. It
+    and `OT_fit_garment` share the place→align→conform sequence via
+    `operators/_fit_common.place_and_conform` (no batch-specific solver
+    logic — ARCHITECTURE §8).
   - Small helper operators for pin vertex-group management (create/
     assign/remove a pin group from the active selection).
 - **UI:** a single N-sidebar panel (3D Viewport, "Sculpt Tool" tab) with
@@ -307,7 +328,8 @@ sculpt_tool/
     solver.py               project step: apply binding to a target body
     collision.py            BVH-based penetration test + push-out
     smoothing.py            pin-weighted relaxation pass + RelaxContext (garment's adjacency/edge/pin-weight invariants, built once per garment)
-    pipeline.py             fit_once(garment, target, params, depsgraph) -> fitted positions -- the full project/collision/smooth sequence, reusable by both op_fit.py and (once it lands) op_batch.py
+    pipeline.py             fit_once (frozen-projection path) + conform_placed (placement path: offset-preserving reprojection, fix B2) + FitParams
+    quality.py              surface-quality metrics (edge distortion, looseness preservation) for the fix-C regression gate
     storage.py               read/write binding data as mesh custom attributes
 ```
 
@@ -405,7 +427,7 @@ broken," not the evidence for it.
 | 15 | Partial pin-weight blend was non-linear (0.76x-0.96x instead of ~weight) | Closed | `1638a2d4` (Deployed, PR [#11](https://github.com/Magecatz/Sculpt_tool/pull/11)) | Outer-iteration blend now matches section 6's documented "fully solved ↔ rigid" behavior. See DECISIONS.md §3a. |
 | 16 | `core/` modules called `bpy.context` directly (broke the "pure/testable" claim) | Closed | `cd0d1569` (Deployed, PR [#17](https://github.com/Magecatz/Sculpt_tool/pull/17)) | Depsgraph is now injected by callers; verified zero `bpy.context` under `sculpt_tool/core/`. |
 | 17 | No automated test suite | Closed | `3d1fc8bc` (Deployed, PR [#13](https://github.com/Magecatz/Sculpt_tool/pull/13)) | Headless Blender `unittest` harness under `tests/`; see section 9. |
-| 18 | No armature-driven initial posing / placement (Stage 1) | **Implemented** (position + rotation + scale; fit consumes it) | R1–R8 deployed: `062cfedd`/`1b7b56eb`/`cfa7e4aa`/`812a0a6a`/`450bdee9`/`c342ccc2`/`19fe6586`/`a541e4cb` (PRs #25–#31 + R6/R8) | Stage 1 exists and is wired as the fit's stage 0: rig awareness (`core/rig.py`) + canonical bone mapping across naming families (`core/rig_map.py`) + **full placement** — position + rotation + along-bone length-scale (`core/pose.py`/`op_pose.py`, R7) — move and size the garment onto the target base; the surface fit then **conforms the placed garment** (`core/pipeline.conform_placed`, R8) and hides the live Armature modifier so the bake isn't double-deformed. R4's alignment guard refuses a gross mismatch. Validated on real assets (Tech Set → Egirl: garment lifted to the chest and scaled to the arms, vs. sitting low/mangled before). **Remaining:** girth (across-bone thickness) is handled by the collision/fit passes, not the armature; surface polish depends on the smoothing pass. See DECISIONS.md §6 and section 3 step 0. |
+| 18 | No armature-driven initial posing / placement (Stage 1) | **Implemented** + deformation fixes (A/B2/C) | R1–R8 deployed: `062cfedd`/`1b7b56eb`/`cfa7e4aa`/`812a0a6a`/`450bdee9`/`c342ccc2`/`19fe6586`/`a541e4cb`; deformation fixes A/B2/C (DECISIONS.md §7) | Stage 1 exists and is wired as the fit's stage 0: rig awareness (`core/rig.py`) + canonical bone mapping across naming families (`core/rig_map.py`) + **full placement** — position + rotation + along-bone length-scale (`core/pose.py`/`op_pose.py`, R7). **Fix A** made the placement rotation rest-orientation-compensated (was slamming absolute target orientation → up to ~143° twist on helper bones; the main cause of mangled renders). **Fix B2** made `conform_placed` re-derive correspondence from the placed positions and reapply the garment's authored standoff (loose stays loose, tight conforms) instead of shrink-wrapping. **Fix C** added a surface-quality regression gate (`core/quality.py`: edge distortion + looseness preservation; `tests/test_quality.py`, real-asset gate in `tests/retarget_repro.py`, and the placement twist test in `tests/test_placement.py`). Real-asset regression (`tests/retarget_repro.py`): all 9 Tech-Set×base retargets on-body, looseness preserved 0.54–0.89 (floor 0.40, was ~0.27 pre-B2); retargeted Top lands 0.46% of body-diagonal from the manual `Example1.blend` fit (manual's own standoff 0.67%). **Remaining:** girth is handled by the surface passes, not the armature; loose open boundaries still carry residual distortion. See DECISIONS.md §6–§7 and section 3 step 0. |
 
 **Note on rows 1, 2, 7-10, 18:** these are long-standing v1 design-scope
 limitations rather than defects found in already-built behavior. Rows

@@ -81,8 +81,8 @@ deterministic by construction, not by an extra guard here.
 
 import bpy
 
-from . import _shapekeys, op_bases, op_pose
-from ..core import alignment, geometry, pipeline, rig, smoothing, storage
+from . import _fit_common, op_bases, op_pose
+from ..core import geometry, pipeline, rig, smoothing, storage
 
 # Shape key name prefix for a batch target's own output -- see module
 # docstring's "Output naming" section. Built from storage.
@@ -199,14 +199,12 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
 
         depsgraph = context.evaluated_depsgraph_get()
 
-        # Roadmap R4 alignment guard. The garment's world positions are a
-        # per-garment invariant (constant across the batch's targets), so
-        # they're computed once here, not once per target -- same hoisting
-        # rationale as relax_ctx / matrix_inverse above.
         # Roadmap R5 -- pose transfer per target base. Each target body in
-        # the collection has its own rig; the garment is posed onto that
-        # rig's pose before its fit (reset to rest first, so targets don't
-        # accumulate). A no-op for a target base at the garment's pose.
+        # the collection has its own rig; the garment is placed onto that
+        # rig before its fit. Placement + alignment guard + conform is the
+        # exact sequence single-target Fit runs, so it's shared via
+        # ``_fit_common.place_and_conform`` (ARCHITECTURE.md section 8: no
+        # separate batch-specific solver logic).
         auto_pose = getattr(settings, "auto_pose_transfer", True)
         garment_arm = op_bases.garment_rig(garment_obj, settings) if auto_pose else None
         pose_overrides = [
@@ -216,14 +214,6 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
         ]
 
         check_alignment = not getattr(settings, "skip_alignment_check", False)
-
-        # If we'll place per target, make sure the garment's Armature deform
-        # is live before the loop (a prior placement fit may have muted it);
-        # it's re-muted once after the loop so the baked keys aren't deformed
-        # twice (roadmap R8).
-        if garment_arm is not None:
-            op_pose.set_armature_deform_visible(garment_obj, True)
-            context.view_layer.update()
         placement_used = False
 
         successes = []
@@ -244,64 +234,35 @@ class SCULPTTOOL_OT_batch_fit(bpy.types.Operator):
                     )
                     continue
 
-                # Stage 0 (R7): PLACE the garment onto THIS target base's rig
-                # (position + rotation + scale), reset to rest first so
-                # targets don't accumulate. Falls back to a plain reset for a
-                # target with no rig, so it isn't left in a prior target's
-                # placement.
-                placed = False
-                if garment_arm is not None:
-                    target_rig = rig.deforming_armature(target_obj)
-                    if target_rig is not None:
-                        op_pose.place_garment_onto_rig(
-                            context, garment_arm, target_rig, pose_overrides
-                        )
-                        placed = True
-                        placement_used = True
-                    else:
-                        op_pose.reset_pose(garment_arm)
-                        context.view_layer.update()
-
-                garment_positions = None
-                if placed or check_alignment:
-                    # Read the (now-placed) garment, muted so a re-run's own
-                    # stacked Fitted_<target> bakes aren't read back in.
-                    with _shapekeys.muted_addon_output(context, garment_obj):
-                        align_depsgraph = context.evaluated_depsgraph_get()
-                        garment_positions, _ = geometry.world_space_positions_and_normals(
-                            garment_obj, align_depsgraph
-                        )
-
-                if check_alignment:
-                    report = alignment.check_against_body(
-                        garment_positions, target_ctx,
-                        label=f"target body '{target_obj.name}'",
-                    )
-                    if not report.aligned:
-                        failures.append((target_obj.name, report.reason))
-                        self.report(
-                            {'WARNING'},
-                            f"Batch Fit: skipped '{target_obj.name}' -- {report.reason}",
-                        )
-                        continue
+                # Resolve THIS target's rig. Placement runs only when both a
+                # garment rig and this target's rig exist; for a rigless
+                # target, reset the garment to rest first so it isn't left in
+                # the PREVIOUS target's placement, then fit unposed.
+                target_rig = rig.deforming_armature(target_obj) if garment_arm is not None else None
+                if garment_arm is not None and target_rig is None:
+                    op_pose.reset_pose(garment_arm)
+                    context.view_layer.update()
 
                 try:
-                    if placed:
-                        # Conform the placed garment (see op_fit / R8).
-                        fitted_world = pipeline.conform_placed(
-                            garment_positions, target_ctx, params, garment_obj
-                        )
-                    else:
-                        fitted_world = pipeline.fit_once(
-                            garment_obj, target_obj, params, depsgraph,
-                            relax_ctx=relax_ctx, target_ctx=target_ctx,
-                        )
+                    fitted_world, placed = _fit_common.place_and_conform(
+                        context, garment_obj, target_obj, target_ctx, params,
+                        garment_arm, target_rig, pose_overrides,
+                        check_alignment=check_alignment, relax_ctx=relax_ctx,
+                    )
+                except _fit_common.AlignmentRejected as exc:
+                    failures.append((target_obj.name, exc.reason))
+                    self.report(
+                        {'WARNING'},
+                        f"Batch Fit: skipped '{target_obj.name}' -- {exc.reason}",
+                    )
+                    continue
                 except ValueError as exc:
                     failures.append((target_obj.name, str(exc)))
                     self.report(
                         {'WARNING'}, f"Batch Fit: skipped '{target_obj.name}' -- {exc}"
                     )
                     continue
+                placement_used = placement_used or placed
 
                 if len(fitted_world) != vertex_count:
                     message = (
