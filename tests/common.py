@@ -174,11 +174,12 @@ def make_armature(name, bones, location=(0.0, 0.0, 0.0)):
     """Build an Armature Object named ``name`` from a bone spec and link it.
 
     ``bones`` is a list of ``(bone_name, head, tail, parent_name_or_None)``
-    tuples; ``head``/``tail`` are 3-tuples in armature-local space, and
-    ``parent_name`` (if given) must name an earlier bone in the list.
-    Returns the Armature Object (in Object mode). Used by the rig-awareness
-    tests (roadmap R1) to stand in for the real, un-checkinable rigged FBX
-    assets with a small synthetic humanoid-ish skeleton.
+    tuples -- optionally with a 5th ``roll`` element (radians) to give a
+    bone a non-default roll (used by the pose-transfer tests to build two
+    rigs whose bones share a rest direction but differ in roll). ``head``/
+    ``tail`` are 3-tuples in armature-local space, and ``parent_name`` (if
+    given) must name an earlier bone in the list. Returns the Armature
+    Object (in Object mode).
     """
     arm_data = bpy.data.armatures.new(name)
     obj = bpy.data.objects.new(name, arm_data)
@@ -187,10 +188,13 @@ def make_armature(name, bones, location=(0.0, 0.0, 0.0)):
     bpy.context.view_layer.objects.active = obj
     bpy.ops.object.mode_set(mode='EDIT')
     created = {}
-    for bone_name, head, tail, parent_name in bones:
+    for spec in bones:
+        bone_name, head, tail, parent_name = spec[0], spec[1], spec[2], spec[3]
+        roll = spec[4] if len(spec) > 4 else 0.0
         edit_bone = arm_data.edit_bones.new(bone_name)
         edit_bone.head = head
         edit_bone.tail = tail
+        edit_bone.roll = roll
         if parent_name is not None:
             edit_bone.parent = created[parent_name]
         created[bone_name] = edit_bone
@@ -210,6 +214,50 @@ def bind_mesh_to_armature(mesh_obj, armature_obj):
     modifier.object = armature_obj
     update_scene()
     return modifier
+
+
+def skin_mesh_all_to_bone(mesh_obj, armature_obj, bone_name):
+    """Skin every vertex of ``mesh_obj`` to a single ``bone_name`` (weight
+    1.0) and attach an Armature modifier -- the minimal rigged mesh the
+    pose-transfer tests (roadmap R3) need to see a garment follow a posed
+    bone. Returns the created vertex group."""
+    group = mesh_obj.vertex_groups.new(name=bone_name)
+    group.add(list(range(len(mesh_obj.data.vertices))), 1.0, 'REPLACE')
+    modifier = mesh_obj.modifiers.new(name="Armature", type='ARMATURE')
+    modifier.object = armature_obj
+    update_scene()
+    return group
+
+
+def point_bone_along(armature_obj, bone_name, world_dir):
+    """Pose ``bone_name`` so it points along ``world_dir`` (armature assumed
+    at identity world rotation, as ``make_armature`` builds it). Sets the
+    pose bone's armature-space matrix and returns nothing. Used by the
+    pose-transfer tests to put a target rig into a known, non-rest pose
+    (Blender bones point along their local +Y, so posing by a raw local
+    quaternion is a twist, not a swing -- this avoids that gotcha)."""
+    from mathutils import Matrix, Vector
+
+    world_dir = Vector(world_dir).normalized()
+    pose_bone = armature_obj.pose.bones[bone_name]
+    bone = armature_obj.data.bones[bone_name]
+    rest = bone.matrix_local
+    rest_axis = (rest.to_3x3() @ Vector((0.0, 1.0, 0.0))).normalized()
+    swing = rest_axis.rotation_difference(world_dir)
+    new_rotation = (swing.to_matrix() @ rest.to_3x3()).to_4x4()
+    pose_bone.matrix = Matrix.Translation(rest.to_translation()) @ new_rotation
+    update_scene()
+
+
+def posed_bone_direction(armature_obj, bone_name):
+    """World-space (tail - head) direction of a pose bone in its CURRENT
+    pose -- for asserting that a bone actually rotated to follow a pose."""
+    update_scene()
+    pose_bone = armature_obj.pose.bones[bone_name]
+    matrix = armature_obj.matrix_world
+    head = matrix @ pose_bone.head
+    tail = matrix @ pose_bone.tail
+    return (tail - head).normalized()
 
 
 def world_positions(obj):
