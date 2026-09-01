@@ -299,10 +299,14 @@ def _laplacian_step(positions, neighbors, pin_weights):
 # run's collection size. Note also that these sweeps are Gauss-Seidel and
 # therefore sequential -- the Batch card's NumPy/foreach_get bulk-vertex
 # mitigation does not speed this up. An adaptive/early-exit variant
-# (stopping once residual edge-length error falls under a threshold
-# instead of always running all 16) is the tracked candidate if real
-# Batch runtimes demand it: Backlog card
-# 5b232224-901f-4c7a-a991-42cb29b5627d. Do not re-tune this constant
+# (stopping once residual edge-length error falls under a threshold instead
+# of always running all 16) was prototyped and MEASURED on Backlog card
+# 5b232224-901f-4c7a-a991-42cb29b5627d and gave NO speedup: each outer
+# relax() iteration's Laplacian step re-introduces enough edge-length error
+# that 16 Gauss-Seidel sub-sweeps never drive the max per-edge residual
+# below ~1%, so at any tolerance tight enough to preserve the tube
+# shrinkage the early-exit never triggers. The fixed 16 stays; see
+# DECISIONS.md Sec 2 for the measurement table. Do not re-tune this constant
 # downward on perf grounds without re-running the tube shrinkage test --
 # that test now exists and is checked in:
 # tests/test_smoothing.py::TubeShrinkageTest (run via
