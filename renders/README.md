@@ -1,15 +1,30 @@
 # Showcase renders (dev tooling)
 
-Headless-Blender scripts that render the retarget pipeline on the real
-`Test_Items` assets, so each stage can be seen. **Dev tooling, not part of
+Headless-Blender rendering of the retarget pipeline on the real
+`Test_Items` assets, so the result can be seen. **Dev tooling, not part of
 the add-on** and not run by the test suite — opt-in, like `tests/perf.py` /
-`tests/corpus_repro.py` (they need the local, gitignored asset corpus).
+`tests/corpus_repro.py` (it needs the local, gitignored asset corpus).
+
+A single parametric script, `render.py`, drives everything (it replaced the
+old pile of one-off `render_r*.py` / `render_*_fix.py` / `render_variants`
+scripts). It retargets garments onto bases through the deployed operators
+(bind + placement + conform) and renders a solid Workbench image.
 
 ## Run
 
-    blender --background --factory-startup --python renders/render_r8.py
+    # multi-view of one outfit (default: full Tech Set -> Egirl, 4 angles)
+    blender --background --factory-startup --python renders/render.py -- views
 
-Output PNGs land in `renders/out/` (gitignored). Each script imports
+    # grid of assorted garment x base pairings
+    blender --background --factory-startup --python renders/render.py -- combos
+
+`views` takes optional overrides after the mode — a comma-separated mesh
+list from `FBX-Tech Set by Vinuzhka.fbx` and a base key (`Egirl` / `Fantasy`
+/ `Venus`):
+
+    ... -- views "Sweater by Vinuzhka,pants by Vinuzhka" Fantasy
+
+Output PNGs land in `renders/out/` (gitignored). `render.py` imports
 `renderlib` for shared helpers and path/config, so nothing hard-codes a
 machine path:
 
@@ -17,19 +32,11 @@ machine path:
   honors `$SCULPT_TOOL_TEST_ITEMS`, then `<repo>/Test_Items`, then the main
   worktree's `Test_Items`).
 - `renderlib.SMOOTHING_ITERATIONS` — smoothing passes the showcase fits use
-  (edit to taste; scripts read it via `s.smoothing_iterations`).
+  (edit to taste; `render.py` reads it via `s.smoothing_iterations`).
 
-## What each renders
+## Outputs
 
-| Script | Shows |
+| Mode | Produces |
 |---|---|
-| `render_r1.py` | Base retargeting — source vs target base (rig awareness) |
-| `render_r2.py` | Canonical bone map — matched bones colored across two rigs |
-| `render_r3.py` | Pose transfer — sleeves follow an arms-down base |
-| `render_r4.py` | Alignment guard — accepted vs refused |
-| `render_r5.py` | End-to-end pipeline — one garment onto three bases |
-| `render_r6.py` | Full Tech Set retarget across three bases |
-| `render_r7.py` | Position + scale placement (before/after) |
-| `render_r8.py` | Fit consumes the placed garment (before/after) |
-| `render_r9.py` | Corrected capstone — full Tech Set, placed + scaled |
-| `render_variants.py` | Assorted garments × assorted bases |
+| `views` | `out/view_{front,three-quarter,side,back}.png` — one outfit, four angles |
+| `combos` | `out/combos_3q.png` — a row of assorted garment × base pairings |
