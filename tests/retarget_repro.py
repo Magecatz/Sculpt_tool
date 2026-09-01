@@ -196,6 +196,7 @@ def main():
 
                 # 3) usability: on-body + residual penetration.
                 pen_frac = float("nan")
+                cz_frac = float("nan")
                 on_body = False
                 fitted = _fitted_world(garment) if fit_r == {'FINISHED'} else None
                 if fitted:
@@ -206,18 +207,25 @@ def main():
                     hi = Vector((max(p[i] for p in ctx.positions) for i in range(3)))
                     c = _centroid(fitted)
                     on_body = all(lo[i] - 0.1 <= c[i] <= hi[i] + 0.1 for i in range(3))
+                    # Position/scale (R9): the fitted garment's centroid height
+                    # as a fraction of the target BASE's height -- placement
+                    # should put it at a sensible on-body height (not down at
+                    # the feet / floating), tracking the target's proportions.
+                    body_height = hi.z - lo.z
+                    cz_frac = (c.z - lo.z) / body_height if body_height > 1e-6 else 0.0
                     stride = max(1, len(fitted) // 3000)
                     sample = fitted[::stride]
                     pen = sum(1 for p in sample if _parity_inside(p, bvh))
                     pen_frac = pen / len(sample)
 
+                height_ok = 0.1 <= cz_frac <= 0.98
                 passed = (
                     not gaps and bind_r == {'FINISHED'} and fit_r == {'FINISHED'}
-                    and on_body and pen_frac <= MAX_PENETRATION_FRACTION
+                    and on_body and height_ok and pen_frac <= MAX_PENETRATION_FRACTION
                 )
                 ok = ok and passed
                 rows.append((base_label, disp, len(gaps), bind_r == {'FINISHED'},
-                             fit_r == {'FINISHED'}, on_body, pen_frac, passed))
+                             fit_r == {'FINISHED'}, on_body, cz_frac, pen_frac, passed))
 
                 bpy.data.objects.remove(garment, do_unlink=True)
                 bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
@@ -229,18 +237,22 @@ def main():
         print("Real-asset retarget regression -- Tech Set -> Egirl/Fantasy/Venus (card c342ccc2)")
         print("Pipeline: canonical bone map -> pose stage 0 -> Mode B bind/fit/collision, via operators")
         print("=" * 92)
-        hdr = f"{'Base':<22}{'Garment':<10}{'MapGaps':>8}{'Bind':>6}{'Fit':>5}{'OnBody':>8}{'Penet%':>8}{'':>4}"
+        hdr = (f"{'Base':<22}{'Garment':<10}{'MapGaps':>8}{'Bind':>6}{'Fit':>5}"
+               f"{'OnBody':>8}{'HeightF':>9}{'Penet%':>8}{'':>4}")
         print(hdr)
         print("-" * len(hdr))
-        for base_label, disp, gaps, bind_ok, fit_ok, on_body, pen_frac, passed in rows:
+        for base_label, disp, gaps, bind_ok, fit_ok, on_body, cz_frac, pen_frac, passed in rows:
             pen = "n/a" if pen_frac != pen_frac else f"{pen_frac*100:.1f}"
+            czf = "n/a" if cz_frac != cz_frac else f"{cz_frac:.2f}"
             print(f"{base_label:<22}{disp:<10}{gaps:>8}{('Y' if bind_ok else 'N'):>6}"
-                  f"{('Y' if fit_ok else 'N'):>5}{('Y' if on_body else 'N'):>8}{pen:>8}"
+                  f"{('Y' if fit_ok else 'N'):>5}{('Y' if on_body else 'N'):>8}{czf:>9}{pen:>8}"
                   f"{('  OK' if passed else ' XX'):>4}")
         print("-" * len(hdr))
+        print("HeightF = fitted garment centroid height as a fraction of the "
+              "target base height (a torso/leg piece should sit mid-body, not at 0).")
 
-        # --- Ground-truth reference (informational) ----------------------
-        _print_example_reference(test_items)
+        # --- Ground-truth comparison (Example1.blend) --------------------
+        _example_comparison(test_items)
 
         print("\n" + ("OK: retarget usable across all three naming families."
                        if ok else "FAIL: at least one retarget regressed (see XX rows)."))
@@ -250,43 +262,98 @@ def main():
             sculpt_tool.unregister()
 
 
-def _print_example_reference(test_items):
+def _mesh_bvh(obj, depsgraph):
+    ctx = geometry.TargetContext.build(obj, depsgraph)
+    return ctx
+
+
+def _mean_nearest_distance(points, bvh):
+    total = 0.0
+    hits = 0
+    for p in points:
+        loc, _n, idx, _d = bvh.find_nearest(p)
+        if idx is not None:
+            total += (p - loc).length
+            hits += 1
+    return (total / hits) if hits else float("nan")
+
+
+def _example_comparison(test_items):
+    """Quantitative comparison against the user's manual fit (roadmap R9).
+
+    Opens ``Example1.blend`` (manual ``Tech Outfit`` on a POSED Egirl BODY),
+    retargets the Tech Set Top onto that same posed BODY through the deployed
+    pipeline (placement + conform), and reports how close the retarget lands
+    to the manual ground truth -- now feasible because placement handles the
+    pose/position/scale gap. Informational (posed-base fit polish is still
+    improving), but a real number the pipeline can be tracked against."""
     example = test_items / "Example1.blend"
     if not example.exists():
         return
     try:
         bpy.ops.wm.open_mainfile(filepath=str(example))
     except Exception as exc:
-        print(f"\n(Example1.blend reference skipped: {exc})")
+        print(f"\n(Example1 comparison skipped: {exc})")
         return
     body = bpy.data.objects.get("BODY")
     outfit = bpy.data.objects.get("Tech Outfit")
     if body is None or outfit is None:
-        print("\n(Example1.blend: expected BODY + 'Tech Outfit' not found -- skipping reference)")
+        print("\n(Example1: BODY + 'Tech Outfit' not found -- skipping)")
         return
+
+    if not hasattr(bpy.types.Object, "sculpt_tool"):
+        sculpt_tool.register()
+
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    ctx = geometry.TargetContext.build(body, depsgraph)
-    bvh = ctx.bvh
-    m = outfit.matrix_world
-    verts = list(outfit.data.vertices)
-    stride = max(1, len(verts) // 3000)
-    dsum = 0.0
-    n = 0
-    for v in verts[::stride]:
-        w = m @ v.co
-        loc, _nrm, idx, _d = bvh.find_nearest(w)
-        if idx is not None:
-            dsum += (w - loc).length
-            n += 1
-    lo = Vector((min(p[i] for p in ctx.positions) for i in range(3)))
-    hi = Vector((max(p[i] for p in ctx.positions) for i in range(3)))
+    body_ctx = _mesh_bvh(body, depsgraph)
+    outfit_ctx = _mesh_bvh(outfit, depsgraph)
+    lo = Vector((min(p[i] for p in body_ctx.positions) for i in range(3)))
+    hi = Vector((max(p[i] for p in body_ctx.positions) for i in range(3)))
     diag = (hi - lo).length
-    mean = dsum / n if n else 0.0
-    print("\nGround-truth reference (Example1.blend, INFORMATIONAL -- posed manual fit):")
-    print(f"  'Tech Outfit' mean standoff from the Egirl BODY surface: "
-          f"{mean:.4f} ({mean/diag*100:.2f}% of body diagonal). "
-          "A good retarget hugs the body at a comparable, small standoff.")
-    print("  (Direct posed-base comparison awaits board card a541e4cb; see module docstring.)")
+
+    # Ground-truth reference: the manual outfit's own standoff from the body.
+    om = outfit.matrix_world
+    outfit_pts = [om @ v.co for v in outfit.data.vertices]
+    stride = max(1, len(outfit_pts) // 3000)
+    gt_standoff = _mean_nearest_distance(outfit_pts[::stride], body_ctx.bvh)
+
+    # Retarget the Tech Set Top onto this posed BODY.
+    source_body, _sa = _import_named(test_items / "Body" / SOURCE_FBX, SOURCE_OBJ)
+    source_body.name = "SourceRP_ex"
+    garment, _ga = _import_named(
+        test_items / "Clothing" / "FBX-Tech Set by Vinuzhka.fbx", "Top by Vinuzhka"
+    )
+    s = garment.sculpt_tool
+    s.source_body = source_body
+    s.target_body = body
+    s.bind_mode_override = 'MODE_B'
+    s.target_base_armature = rig.deforming_armature(body)
+    s.skip_alignment_check = True
+    s.use_collision_resolution = True
+    s.smoothing_iterations = 0
+    bpy.context.view_layer.objects.active = garment
+    garment.select_set(True)
+    try:
+        bind_r = bpy.ops.sculpttool.bind_garment()
+        fit_r = bpy.ops.sculpttool.fit_garment()
+    except RuntimeError as exc:
+        print(f"\n(Example1 comparison: retarget failed -- {str(exc)[:60]})")
+        return
+
+    print("\nGround-truth comparison (Example1.blend -- posed manual fit):")
+    if bind_r == {'FINISHED'} and fit_r == {'FINISHED'}:
+        fitted = _fitted_world(garment)
+        # Nearest distance from our retargeted Top to the manual outfit surface.
+        stride2 = max(1, len(fitted) // 3000)
+        to_gt = _mean_nearest_distance(fitted[::stride2], outfit_ctx.bvh)
+        print(f"  Retargeted Top -> manual 'Tech Outfit' surface: mean distance "
+              f"{to_gt:.4f} ({to_gt / diag * 100:.2f}% of body diagonal).")
+        print(f"  (Reference: manual outfit's own standoff from the body is "
+              f"{gt_standoff:.4f} / {gt_standoff / diag * 100:.2f}%.)")
+        print("  Lower = closer to how the user hand-fitted it. Posed-base fit "
+              "polish (girth/smoothing) is still improving; this is the tracked number.")
+    else:
+        print(f"  Retarget did not complete (bind={bind_r}, fit={fit_r}).")
 
 
 if __name__ == "__main__":
