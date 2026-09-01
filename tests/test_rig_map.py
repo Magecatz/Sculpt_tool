@@ -63,7 +63,9 @@ class CanonicalizeTest(unittest.TestCase):
         self.assertEqual(rig_map.canonicalize("Toes.L"), CanonicalBone("Toe", "L"))
 
     def test_helper_bones_unmapped(self):
-        for name in ["Boob_Root", "Boob.L", "Nipple.L", "Elbow_Twist.L",
+        # NB: Boob.L / Breast_1.L now map (see BreastMappingTest); the breast
+        # ROOT and NIPPLE bones remain unmapped.
+        for name in ["Boob_Root", "Nipple.L", "Root_Breast.L", "Elbow_Twist.L",
                     "Wrist_Twist.R", "Thigh_Jiggle.L", "Twist_Upper_Arm_1.L",
                     "PV_Elbow_1.L", "Butt_Root", "Coochy_L", "Tummy",
                     "Hips Dips", "PV_Spine_1", "Head_end", "Toes.L_end"]:
@@ -114,6 +116,38 @@ class PrimaryChainCoverageTest(unittest.TestCase):
         s2t = bone_map.source_to_target()
         self.assertEqual(s2t["Arm.L"], "Arm_L")
         self.assertEqual(s2t["Toes.L"], "Toe_L")  # Toes -> Toe
+
+
+class BreastMappingTest(unittest.TestCase):
+    """Breast/chest bones map across families so placement can position the
+    garment's bust region to the target's breasts (bust-conformance card)."""
+
+    def test_breast_bone_canonicalizes(self):
+        self.assertEqual(rig_map.canonicalize("Boob.L"), CanonicalBone("Breast", "L", 1))
+        self.assertEqual(rig_map.canonicalize("Boob_R"), CanonicalBone("Breast", "R", 1))
+        self.assertEqual(rig_map.canonicalize("Breast_1.L"), CanonicalBone("Breast", "L", 1))
+        self.assertEqual(rig_map.canonicalize("Breast_2.L"), CanonicalBone("Breast", "L", 2))
+
+    def test_breast_root_and_nipple_excluded(self):
+        for name in ["Boob_Root", "Root_Breast.L", "Nipple.L", "Nipple.R"]:
+            self.assertIsNone(rig_map.canonicalize(name))
+
+    def test_breast_maps_across_rig_families(self):
+        # RP (Boob.L) <-> vrbase (Boob_L) <-> Venus (Breast_1.L)
+        for src, tgt, s_bone, t_bone in [
+            (RP_FEMALE, VRBASE, "Boob.L", "Boob_L"),
+            (RP_FEMALE, VENUS, "Boob.L", "Breast_1.L"),
+            (VRBASE, VENUS, "Boob_L", "Breast_1.L"),
+        ]:
+            s2t = rig_map.build_bone_map(src, tgt).source_to_target()
+            self.assertEqual(s2t.get(s_bone), t_bone, f"{s_bone}->{t_bone}")
+
+    def test_primary_chain_unaffected(self):
+        # Breast is an EXTRA correspondence, not part of the required primary
+        # chain -- every rig pair still resolves the full primary chain.
+        for a, b in [(RP_FEMALE, VENUS), (VRBASE, TECHSET)]:
+            bm = rig_map.build_bone_map(a, b)
+            self.assertEqual(rig_map.missing_primary_bones(bm), [])
 
 
 class SurfacingAndOverrideTest(unittest.TestCase):
