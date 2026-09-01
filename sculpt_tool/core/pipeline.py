@@ -48,7 +48,7 @@ class FitParams:
     smoothing_iterations: int = 0
 
 
-def fit_once(garment_obj, target_body_obj, params, depsgraph, relax_ctx=None):
+def fit_once(garment_obj, target_body_obj, params, depsgraph, relax_ctx=None, target_ctx=None):
     """Run the full project -> collision -> smooth pipeline once.
 
     Mirrors ``operators/op_fit.py``'s pre-card pipeline exactly (see that
@@ -99,6 +99,15 @@ def fit_once(garment_obj, target_body_obj, params, depsgraph, relax_ctx=None):
     even build the adjacency/neighbor structure or look up ``Pin_*``
     vertex groups.
 
+    ``target_ctx``, if given, is a pre-built ``core.geometry.TargetContext``
+    for ``target_body_obj`` -- built internally via
+    ``TargetContext.build(target_body_obj, depsgraph)`` when omitted. An
+    operator that already needs the target context for its own purposes
+    before the fit (e.g. ``operators/op_fit.py``'s roadmap-R4 alignment
+    guard, or a batch loop reusing it) passes it in so the target body is
+    evaluated/triangulated/BVH-built exactly once, not once for the
+    pre-check and again here.
+
     Returns the fitted WORLD-SPACE positions, one ``mathutils.Vector`` per
     garment vertex, in vertex-index order -- ready for a caller to convert
     to the garment's local space and bake into a Shape Key (or for a
@@ -110,7 +119,8 @@ def fit_once(garment_obj, target_body_obj, params, depsgraph, relax_ctx=None):
     source body, a solver output length mismatch) -- callers should catch
     it exactly as ``operators/op_fit.py`` always has.
     """
-    target_ctx = geometry.TargetContext.build(target_body_obj, depsgraph)
+    if target_ctx is None:
+        target_ctx = geometry.TargetContext.build(target_body_obj, depsgraph)
 
     projection = solver.project_garment(garment_obj, target_ctx, params.offset_scale)
     fitted = projection.fitted_positions

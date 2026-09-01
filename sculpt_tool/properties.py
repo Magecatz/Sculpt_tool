@@ -187,6 +187,17 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
         description="Result of the last Compute Bone Map run (read-only)",
         default="",
     )
+    skip_alignment_check: bpy.props.BoolProperty(
+        name="Skip Alignment Check",
+        description=(
+            "By default, Bind and Fit refuse a garment that is grossly out "
+            "of pose/position for its base (nowhere near the body surface) "
+            "instead of silently producing garbage (roadmap R4). Enable this "
+            "to force the operation past that guard -- e.g. for an unusual "
+            "but intentional garment the check misjudges"
+        ),
+        default=False,
+    )
     batch_target_collection: bpy.props.PointerProperty(
         name="Target Collection",
         description=(

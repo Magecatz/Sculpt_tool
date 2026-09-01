@@ -33,7 +33,7 @@ import contextlib
 
 import bpy
 
-from ..core import binding, storage
+from ..core import alignment, binding, geometry, storage
 
 
 @contextlib.contextmanager
@@ -149,6 +149,29 @@ class SCULPTTOOL_OT_bind_garment(bpy.types.Operator):
         # _bind_time_evaluation's docstring.
         with _bind_time_evaluation(context, garment_obj, source_body_obj):
             depsgraph = context.evaluated_depsgraph_get()
+
+            # Roadmap R4: refuse a garment grossly out of pose/position for
+            # its SOURCE body at bind time -- subsumes ARCHITECTURE.md
+            # section 7 row 2 (Mode B silently produces a garbage binding if
+            # the garment isn't reasonably positioned near its source body).
+            if not getattr(settings, "skip_alignment_check", False):
+                try:
+                    source_ctx = geometry.TargetContext.build(source_body_obj, depsgraph)
+                    garment_positions, _ = geometry.world_space_positions_and_normals(
+                        garment_obj, depsgraph
+                    )
+                    report = alignment.check_against_body(
+                        garment_positions, source_ctx,
+                        label=f"source body '{source_body_obj.name}'",
+                    )
+                except ValueError:
+                    # An empty/degenerate source body is reported by the
+                    # bind logic below with its own specific error -- don't
+                    # pre-empt that with a generic alignment failure.
+                    report = alignment.AlignmentReport(aligned=True)
+                if not report.aligned:
+                    self.report({'ERROR'}, report.reason)
+                    return {'CANCELLED'}
 
             if mode == binding.MODE_A:
                 result = binding.bind_mode_a(garment_obj, source_body_obj, depsgraph)
