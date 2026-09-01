@@ -57,6 +57,39 @@ class SyntheticRetargetTest(unittest.TestCase):
         self.assertEqual(s2t["Leg.L"], "Leg_L")
         self.assertEqual(s2t["Hips"], "Hips")
 
+    def test_retarget_tracks_target_scale(self):
+        # Roadmap R9 fast guard: a garment retargeted onto a TALLER target
+        # base comes out taller (position + scale tracked), not stuck at its
+        # authored size. Garment rig + a target rig/body shifted up and
+        # stretched ~1.5x vertically.
+        source = common.make_grid("Source", x_segments=4, y_segments=4)
+        garment = common.make_grid("Garment", x_segments=4, y_segments=4,
+                                   location=(0.0, 0.0, 0.1))
+        target = common.make_grid("Target", x_segments=4, y_segments=4,
+                                  location=(0.0, 0.0, 0.9))
+        garment_rig = common.make_armature("GRig", [
+            ("Hips", (0.0, 0.0, 0.0), (0.0, 0.0, 0.4), None),
+        ])
+        target_rig = common.make_armature("TRig", [
+            ("Hips", (0.0, 0.0, 0.8), (0.0, 0.0, 1.4), None),  # higher + 1.5x longer
+        ])
+        common.skin_mesh_all_to_bone(garment, garment_rig, "Hips")
+
+        s = garment.sculpt_tool
+        s.source_body = source
+        s.target_body = target
+        s.bind_mode_override = 'MODE_A'
+        s.target_base_armature = target_rig
+        s.skip_alignment_check = True
+        bpy.context.view_layer.objects.active = garment
+        garment.select_set(True)
+        self.assertEqual(bpy.ops.sculpttool.bind_garment(), {'FINISHED'})
+        self.assertEqual(bpy.ops.sculpttool.fit_garment(), {'FINISHED'})
+
+        fitted = common.set_shape_key_active_positions(garment, storage.FITTED_SHAPE_KEY_NAME)
+        # Garment rose toward the higher target hips (was at z~0.1).
+        self.assertGreater(sum(p.z for p in fitted) / len(fitted), 0.7)
+
     def test_end_to_end_retarget_completes_and_stays_on_body(self):
         # Cross-topology (Mode B) source/target so this exercises the real
         # retarget mode, with the garment rigged '.L' and the target base

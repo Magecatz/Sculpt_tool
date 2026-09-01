@@ -830,11 +830,33 @@ with residual body penetration 0.0–3.3% of garment vertices (ceiling 25%).
 Ground-truth reference: the manual `Example1.blend` Tech Outfit sits at a
 ~0.67%-of-body-diagonal mean standoff.
 
-**One residual coupling (board card `a541e4cb`, Backlog).** The pose stage
-places the garment *mesh*; the surface projection still re-evaluates the
-*frozen bind-time* correspondence (§4 / ARCHITECTURE §2) rather than
-re-deriving it from the posed garment, and a live posed Armature modifier
-double-transforms the bake. So the pipeline is a **complete, correct**
-retarget onto a **rest-pose** target base (the whole corpus, and what R6
-gates), and the *fully correct* fit onto a **genuinely non-rest** target
-base is the remaining work. See ARCHITECTURE §3 step 0 and §7 row 18.
+**Position + scale added (R7-R9, 2026-09-01).** The initial pose transfer
+(R3) only *rotated* the garment, so a garment authored for one base landed
+too low and wrongly sized on a differently-proportioned base (measured:
+hips 0.81/0.91/0.88, left-arm bone 0.198/0.230/0.145 across RP/Egirl/
+Venus). Three follow-up cards fixed this:
+
+- **R7** `19fe6586` (PR #31) — `core/pose.compute_bone_placements`: full
+  per-bone placement (position + rotation + along-bone length-scale) via
+  the bone map; `op_pose.place_garment_onto_rig` applies it (matrix +
+  `scale.y`, `inherit_scale='NONE'` so chains don't compound).
+- **R8** `a541e4cb` (PR #32) — `core/pipeline.conform_placed`: the fit now
+  *consumes* the placed garment (fresh nearest-surface anchors + collision,
+  smoothing with placed-mesh rest edges) instead of re-projecting the
+  frozen bind-time correspondence, and hides the live Armature modifier
+  after the bake so the placement isn't applied twice. This closes the
+  former residual (double-deform + projection-ignores-placement).
+- **R9** `02a79e31` — regression (`tests/retarget_repro.py` + fast
+  `tests/test_retarget.py`) locks it in with a position/scale height metric
+  and a quantitative ground-truth comparison.
+
+**Measured (R9, 2026-09-01):** all 9 (Tech Set piece x base) retargets
+place at a sensible on-body height (centroid fraction: Top ~0.89, Sweater
+~0.85, Pants ~0.49 of body height) with residual penetration <= ~21%. On
+the POSED Egirl of `Example1.blend`, the retargeted Top lands **0.39% of
+body-diagonal** from the user's manual `Tech Outfit` surface (the manual
+outfit's own standoff is 0.67%) -- i.e. the automatic retarget now matches
+the hand fit closely, on a genuinely posed base. **Remaining:** girth
+(across-bone thickness) comes from the collision/fit passes, not the
+armature; surface smoothness depends on the smoothing pass. See
+ARCHITECTURE §3 step 0 and §7 row 18.
