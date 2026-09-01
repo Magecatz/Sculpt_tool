@@ -40,11 +40,102 @@ identity -- so a garment and target base already in the same pose come out
 unchanged (the co-posed happy path the card requires stays a no-op).
 
 Pure computation: this module reads armature/pose data and returns the
-rotations to apply, as ``{garment_bone_name: mathutils.Quaternion}``. It
-does NOT mutate the scene -- ``operators/op_pose.py`` applies the result
-(setting pose-bone rotations is scene mutation, operator-layer work, like
-every other ``core/`` module's split). No ``bpy.context`` access.
+transforms to apply. It does NOT mutate the scene -- ``operators/op_pose.py``
+applies the result (setting pose-bone transforms is scene mutation,
+operator-layer work, like every other ``core/`` module's split). No
+``bpy.context`` access.
+
+**Rotation vs. full placement.** :func:`compute_pose_rotations` (R3)
+transfers only the per-bone *rotation* -- enough to point the limbs the
+right way, but it does not move or resize the garment, so a garment
+authored for one base lands too low / wrongly sized on a base with
+different proportions (measured across the real bases: hips differ ~10cm,
+limb bones 25-60%, width up to ~25%). :func:`compute_bone_placements` (R7)
+is the fuller transform: it also translates each bone to the target base
+bone's position and stretches it to the target bone's length, so each
+clothing region is positioned AND scaled to the new base. Girth (across-
+bone thickness) is left to the surface fit (card R8).
 """
+
+
+def _parent_first(armature_obj):
+    """Bones of ``armature_obj`` in parent-before-child order, so a caller
+    setting each bone's world matrix in turn (with a depsgraph update
+    between) has the parent's posed transform available when it sets a
+    child."""
+    order = []
+
+    def walk(bone):
+        order.append(bone)
+        for child in bone.children:
+            walk(child)
+
+    for bone in armature_obj.data.bones:
+        if bone.parent is None:
+            walk(bone)
+    return order
+
+
+def compute_bone_placements(garment_arm, target_arm, bone_pairs):
+    """Full per-bone PLACEMENT (position + rotation + length-scale) mapping
+    the garment's skeleton onto the target base's skeleton (roadmap R7).
+
+    Where :func:`compute_pose_rotations` transfers only rotation, this
+    makes each garment bone coincide with the target base bone's current
+    (posed) world position, orientation, AND length -- so the garment,
+    deformed through its own skin weights, is moved to the right place,
+    turned the right way, and stretched to the right size for the target
+    base. This is what fixes a garment authored for one base landing too
+    low / wrongly sized on another (measured: hips differ ~10cm, limb bones
+    25-60%, across the real bases).
+
+    Returns an ordered list of ``(garment_bone_name, world_rigid_matrix,
+    length_scale)`` in parent-first order (see :func:`_parent_first`):
+
+    - ``world_rigid_matrix`` is an **orthonormal** rotation + translation
+      (the target bone's world position and orientation) -- no scale baked
+      in, so a caller can set it via ``pose_bone.matrix`` cleanly.
+    - ``length_scale`` is ``target_bone_length / garment_bone_rest_length``
+      (both in world units) -- the along-bone (Y) stretch the caller applies
+      separately via ``pose_bone.scale.y``. Girth (X/Z) is left at rest; the
+      surface fit refines thickness (card R8).
+
+    Keeping rotation and scale separate avoids a non-orthonormal matrix that
+    Blender's decomposition would mangle into the wrong axis. Pure reads; no
+    scene mutation. Rotation-only :func:`compute_pose_rotations` is retained
+    for the Fit/Batch stage-0 integration until R8 switches it over.
+    """
+    target_world = target_arm.matrix_world
+    garment_world = garment_arm.matrix_world
+    pairs = dict(bone_pairs)
+
+    placements = []
+    for garment_bone in _parent_first(garment_arm):
+        target_name = pairs.get(garment_bone.name)
+        if target_name is None:
+            continue
+        target_pose_bone = target_arm.pose.bones.get(target_name)
+        if target_pose_bone is None:
+            continue
+
+        head = target_world @ target_pose_bone.head
+        tail = target_world @ target_pose_bone.tail
+        target_length = (tail - head).length
+        if target_length < 1e-9:
+            continue
+
+        # Orthonormal rotation from the target bone's world orientation.
+        rotation = (target_world @ target_pose_bone.matrix).to_quaternion()
+        world_rigid = rotation.to_matrix().to_4x4()
+        world_rigid.translation = head
+
+        rest_head = garment_world @ garment_bone.head_local
+        rest_tail = garment_world @ garment_bone.tail_local
+        rest_length = (rest_tail - rest_head).length
+        length_scale = target_length / rest_length if rest_length > 1e-9 else 1.0
+
+        placements.append((garment_bone.name, world_rigid, length_scale))
+    return placements
 
 
 def compute_pose_rotations(garment_arm, target_arm, bone_pairs):
