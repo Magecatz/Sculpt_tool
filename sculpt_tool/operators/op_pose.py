@@ -93,17 +93,25 @@ def place_garment_onto_rig(context, garment_arm, target_arm, overrides=()):
     placements = pose.compute_bone_placements(garment_arm, target_arm, bone_map.as_pairs())
 
     reset_pose(garment_arm)
+    # Disable scale inheritance on EVERY garment bone. Two reasons:
+    # (1) a placed chain (upper arm -> forearm -> hand) must not compound its
+    #     ancestors' length stretches; (2) an UNMAPPED helper bone (e.g. a
+    #     thigh-jiggle bone pointing sideways) must not inherit its mapped
+    #     parent's along-bone stretch -- that non-uniform scale, applied to a
+    #     perpendicular bone, shears its skinned region into a stray flap
+    #     sticking off the body. With inheritance off, an unmapped bone still
+    #     follows its parent's position + rotation (so it travels with the
+    #     limb) but keeps its own size.
+    for pose_bone in garment_arm.pose.bones:
+        pose_bone.bone.inherit_scale = 'NONE'
     context.view_layer.update()
+
     armature_world_inv = garment_arm.matrix_world.inverted()
     placed = 0
     for bone_name, world_rigid, length_scale in placements:
         pose_bone = garment_arm.pose.bones.get(bone_name)
         if pose_bone is None:
             continue
-        # Each placed bone is sized to its OWN target length; disable scale
-        # inheritance so a chain (upper arm -> forearm -> hand) doesn't
-        # compound its ancestors' stretches.
-        pose_bone.bone.inherit_scale = 'NONE'
         # Position + orientation (orthonormal) via matrix, then the along-
         # bone (Y) length stretch via an explicit scale -- kept separate so
         # the matrix stays clean (see core.pose.compute_bone_placements).

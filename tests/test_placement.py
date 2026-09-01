@@ -110,6 +110,49 @@ class PlaceOperatorTest(unittest.TestCase):
         # ...and stretched along the now-longer (2x) arm -> wider X span.
         self.assertGreater(ax_span, bx_span * 1.4)
 
+    def test_unmapped_child_bone_does_not_shear_into_a_flap(self):
+        # A mapped Leg bone that stretches 3x, with an UNMAPPED "jiggle"
+        # helper bone pointing sideways off it and a garment blob skinned to
+        # that helper. The helper must FOLLOW the leg but NOT inherit its
+        # along-bone stretch (which would shear the blob into a stray flap).
+        garment_rig = common.make_armature("GRig", [
+            ("Hips", (0.0, 0.0, 1.0), (0.0, 0.0, 1.2), None),
+            ("Leg.L", (0.1, 0.0, 1.0), (0.1, 0.0, 0.7), "Hips"),        # -Z, len 0.3
+            ("Jiggle_L", (0.1, 0.0, 0.9), (0.4, 0.0, 0.9), "Leg.L"),   # +X helper (unmapped)
+        ])
+        target_rig = common.make_armature("TRig", [
+            ("Hips", (0.0, 0.0, 1.0), (0.0, 0.0, 1.2), None),
+            ("Leg_L", (0.1, 0.0, 1.0), (0.1, 0.0, 0.1), "Hips"),        # len 0.9 -> 3x
+        ])
+        pairs = [("Hips", "Hips"), ("Leg.L", "Leg_L")]  # Jiggle_L intentionally unmapped
+
+        garment = common.make_grid("Blob", x_segments=2, y_segments=2, size=0.12,
+                                   location=(0.35, 0.0, 0.9))
+        common.skin_mesh_all_to_bone(garment, garment_rig, "Jiggle_L")
+        garment.sculpt_tool.target_base_armature = target_rig
+        bpy.context.view_layer.objects.active = garment
+        garment.select_set(True)
+
+        def diag(pts):
+            lo = [min(p[i] for p in pts) for i in range(3)]
+            hi = [max(p[i] for p in pts) for i in range(3)]
+            return ((hi[0]-lo[0])**2 + (hi[1]-lo[1])**2 + (hi[2]-lo[2])**2) ** 0.5
+
+        before = self._eval_positions(garment)
+        before_diag = diag(before)
+        before_c = sum((p.z for p in before)) / len(before)
+
+        from sculpt_tool.operators import op_pose
+        op_pose.place_garment_onto_rig(bpy.context, garment_rig, target_rig, pairs)
+
+        after = self._eval_positions(garment)
+        # It moved with the (now longer) leg...
+        self.assertNotAlmostEqual(sum(p.z for p in after) / len(after), before_c, places=2)
+        # ...but did NOT balloon/shear (the 3x leg stretch was not inherited).
+        self.assertLess(diag(after), before_diag * 1.5)
+        # Mechanism: scale inheritance is off on every garment bone.
+        self.assertTrue(all(b.inherit_scale == 'NONE' for b in garment_rig.data.bones))
+
     def test_hip_height_fix(self):
         # A garment skinned to Hips rises when the target base's hips are
         # higher -- the "garment sits too low" fix.
