@@ -1,8 +1,15 @@
 """N-sidebar UI for Sculpt Tool.
 
 Per ARCHITECTURE.md section 4: a single panel in the 3D Viewport's
-"Sculpt Tool" tab with sections for Binding, Fit, Parameters, Pin
-Regions, and Batch.
+"Sculpt Tool" tab with sections for Binding, Base Retargeting, Fit,
+Parameters, Pin Regions, and Batch.
+
+The Base Retargeting section (roadmap R1, card 062cfedd) exposes the
+source/target base rig pickers (``settings.source_base_armature`` /
+``settings.target_base_armature``) and the Detect Rigs button
+(operators/op_bases.py), plus a read-out of the garment's own rig and the
+two base rigs' bone counts via ``core.rig``. It only records/selects rigs;
+nothing here poses or matches bones (that's roadmap R2/R3).
 
 Binding section is wired to OT_bind_garment (operators/op_bind.py); Fit
 section (plus the offset/thickness-scale, collision-resolution toggle,
@@ -25,7 +32,7 @@ logic".
 
 import bpy
 
-from .core import storage
+from .core import rig, storage
 from .core.smoothing import PIN_GROUP_PREFIX
 
 
@@ -75,6 +82,33 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
                 text=f"Bound to '{source_name}' (Mode {mode}, v{version})",
                 icon='CHECKMARK',
             )
+
+        base_box = layout.box()
+        base_box.label(text="Base Retargeting", icon='ARMATURE_DATA')
+        if settings:
+            base_box.prop(settings, "source_base_armature")
+            base_box.prop(settings, "target_base_armature")
+            base_box.operator("sculpttool.detect_rigs", icon='BONE_DATA')
+            # Read-out: the garment's own rig and the two base rigs' bone
+            # counts, so the user can see at a glance that a rig was found
+            # and roughly how big it is (a later card maps these bones).
+            garment_rig = rig.deforming_armature(obj) if obj else None
+            if garment_rig is not None:
+                base_box.label(
+                    text=f"Garment rig: '{garment_rig.name}' "
+                    f"({len(rig.bone_names(garment_rig))} bones)",
+                    icon='BONE_DATA',
+                )
+            for label, arm in (
+                ("Source base", settings.source_base_armature),
+                ("Target base", settings.target_base_armature),
+            ):
+                info = rig.RigInfo.describe(arm)
+                if info is not None:
+                    base_box.label(
+                        text=f"{label}: '{info.name}' ({info.bone_count} bones)",
+                        icon='CHECKMARK',
+                    )
 
         fit_box = layout.box()
         fit_box.label(text="Fit", icon='MOD_SHRINKWRAP')
