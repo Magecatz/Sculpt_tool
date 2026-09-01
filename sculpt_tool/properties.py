@@ -19,7 +19,12 @@ the iteration count for ``core.smoothing.relax``'s pin-weighted
 relaxation pass; ``0`` disables the pass entirely, and
 ``operators/op_fit.py`` treats that as a true no-op rather than calling
 into ``core.smoothing`` at all). A later card adds pin vertex-group
-references.
+references, and a still-later card (this one) adds
+``batch_target_collection`` -- the Collection of target body objects
+``operators/op_batch.py``'s ``OT_batch_fit`` iterates, one
+``core.pipeline.fit_once`` call per member object, reusing every other
+setting above (offset scale, collision toggle/margin, smoothing
+iterations) unchanged per target.
 """
 
 import bpy
@@ -96,6 +101,20 @@ class SCULPTTOOL_PG_settings(bpy.types.PropertyGroup):
         default=0,
         min=0,
         soft_max=10,
+    )
+    batch_target_collection: bpy.props.PointerProperty(
+        name="Target Collection",
+        description=(
+            "Collection of target body objects for Batch Fit -- runs the "
+            "same project/collision/smooth/bake pipeline as Fit once per "
+            "mesh object in this Collection (excluding the garment itself), "
+            "reusing Offset/Thickness Scale, Collision Resolution, "
+            "Collision Margin, and Smoothing Iterations above for every "
+            "target. A target with no valid binding correspondence (e.g. "
+            "wrong topology for this garment's bind mode) is skipped with "
+            "a warning rather than aborting the rest of the batch"
+        ),
+        type=bpy.types.Collection,
     )
 
 
