@@ -124,14 +124,9 @@ class SCULPTTOOL_OT_conform(bpy.types.Operator):
         else:
             standoff = conform.placed_standoff(placed_world, target_ctx)
 
-        # Stage 3: project every vertex onto the target surface (keep_loose
-        # off). The loose-vertex ramp was found to STRETCH limb-wrapping
-        # sleeves into scattered wings (a sleeve is a loose tube but must still
-        # be girth-projected onto the arm); pure projection wraps them cleanly.
+        # Stage 3: project every placed vertex onto the target surface.
         try:
-            fitted_world = conform.project_to_target(
-                placed_world, standoff, target_ctx, keep_loose=False
-            )
+            fitted_world = conform.project_to_target(placed_world, standoff, target_ctx)
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}

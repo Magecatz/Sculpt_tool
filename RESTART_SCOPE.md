@@ -218,3 +218,41 @@ original two-piece renders and hid the worst failure). Render modes:
 
 A piece is "regressed" if it loses authored identity (the `Top`-balloon
 test). That is the acceptance gate the old pipeline failed.
+
+## 9. Progress log
+
+**Done (branch `claude/conform-rebuild`):**
+
+- **P1 `core/conform.py`** — `authored_standoff` (source-measured),
+  `placed_standoff` (source-free fallback), `project_to_target` (single
+  nearest-surface projection + standoff). No collision, no smoothing.
+- **P2 `op_conform` + UI** — placement spine → `core.conform` → bake Shape
+  Key; Conform panel with optional Source Base picker. Harness `render.py`
+  repointed at it.
+- **Two placement-stage bugs found and fixed** (both surfaced only on
+  Project Venus, a different creator's A-pose rig — every earlier base is a
+  ZinPia T-pose, which hid them):
+  1. **Rest-pose transfer.** `compute_bone_placements` transferred only the
+     target's pose *delta from its own rest*, so a garment authored in one
+     rest pose (T-pose) stayed in it on a base with a different rest pose
+     (A-pose). Fixed by aiming each garment bone along the target bone's
+     actual world direction via a minimal-arc swing (no roll copy, so no
+     twist regression).
+  2. **Joint-span scaling.** Length-scaled each garment bone to the target
+     *bone* length; a base whose primary bones stop short of the next joint
+     (Venus's forearm length is in twist bones) under-scaled the garment
+     (sleeves/pants too short). Fixed by scaling to the target's joint-to-
+     joint span, `max`-guarded so bases that already span their segments are
+     unchanged.
+
+**Revised understanding:** the loose-vertex ramp + spatial-coherence
+smoothing (briefly added) were chasing shredded sleeves that were actually
+the rest-pose bug. With posing correct, plain projection wraps them, so that
+machinery was **removed** — the conform is back to the three lean functions
+above. Optional collision/elastic polish (section 5) is still deferred until
+a specific case demonstrably needs it.
+
+**Acceptance status:** full five-piece Tech Set conforms correctly to Egirl,
+Fantasy (T-pose) and Venus (A-pose, cross-creator). Remaining: ragged
+open-edge rims on the open sweater (cuffs/front) — a boundary-only relax is
+the next candidate polish.
