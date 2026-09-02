@@ -1,5 +1,14 @@
 # Sculpt Tool — Decisions & Fix History
 
+> **⚠️ Conform-rebuild restart (2026-09).** Much of the history below concerns
+> the **removed** binding + fit pipeline (Mode A/B bind, project against a
+> frozen anchor, collision push-out, smoothing relaxation). That whole stage
+> was discarded and rebuilt as a lean Direction-B conform — see
+> `RESTART_SCOPE.md` for the authoritative account and `ARCHITECTURE.md` for
+> the current design. The write-ups below are kept as the historical record
+> (why the old approach was tried, what it measured, why it ultimately
+> failed) — they are **not** a description of the current code.
+
 This is the fix-narrative counterpart to `ARCHITECTURE.md`. That
 document's section 7 is a compact, current-state risk table; this file
 holds the measurements, rejected approaches, and full write-ups behind
