@@ -53,6 +53,18 @@ class CanonicalizeTest(unittest.TestCase):
         self.assertEqual(rig_map.canonicalize("Wrist.L"), CanonicalBone("Hand", "L"))
         self.assertEqual(rig_map.canonicalize("Hand.L"), CanonicalBone("Hand", "L"))
 
+    def test_side_as_leading_or_trailing_word(self):
+        # "Left arm" / "Right elbow" -- side as a whole word, not a .L/_R
+        # suffix (measured on the Cyber Bunny outfit; its unmapped arm chain
+        # left the wrist cuffs floating at the T-pose rest position).
+        self.assertEqual(rig_map.canonicalize("Left arm"), CanonicalBone("UpperArm", "L"))
+        self.assertEqual(rig_map.canonicalize("Right elbow"), CanonicalBone("LowerArm", "R"))
+        self.assertEqual(rig_map.canonicalize("Left wrist"), CanonicalBone("Hand", "L"))
+        self.assertEqual(rig_map.canonicalize("Right leg"), CanonicalBone("UpperLeg", "R"))
+        self.assertEqual(rig_map.canonicalize("arm Right"), CanonicalBone("UpperArm", "R"))
+        # A plain central bone with no side word stays central.
+        self.assertEqual(rig_map.canonicalize("Chest"), CanonicalBone("Chest", None))
+
     def test_leg_chain_and_toes(self):
         self.assertEqual(rig_map.canonicalize("Leg_L"), CanonicalBone("UpperLeg", "L"))
         self.assertEqual(rig_map.canonicalize("Upper_Leg.L"), CanonicalBone("UpperLeg", "L"))

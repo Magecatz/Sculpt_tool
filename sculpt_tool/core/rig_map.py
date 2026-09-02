@@ -97,6 +97,14 @@ _SIDED_SET = set(SIDED_JOINTS)
 # ``Ring Finger .L`` keeps its internal space and loses only the ``.L``).
 _SIDE_RE = re.compile(r"^(.*)[._ ]([LlRr])$")
 
+# Side as a whole WORD ``Left``/``Right`` (case-insensitive), leading or
+# trailing (e.g. ``Left arm``, ``Right elbow``, ``arm Right``) -- a naming
+# family some rigs use instead of a ``.L``/``_R`` suffix (measured on the
+# Cyber Bunny outfit: ``Left arm`` / ``Right wrist``). Tried only after the
+# suffix form fails, so a plain ``.L`` name is unaffected.
+_SIDE_WORD_LEAD_RE = re.compile(r"(?i)^(left|right)\b[\s._-]*(.+)$")
+_SIDE_WORD_TRAIL_RE = re.compile(r"(?i)^(.+?)[\s._-]+(left|right)$")
+
 # Map breast/chest bones so the pose-placement stage positions and scales a
 # garment's bust region to the TARGET base's breasts (fixes bust balloon/
 # gap/ride-up on differently-shaped bases). Every rig family has these:
@@ -166,15 +174,23 @@ def _normalize(token):
 def _extract_side(name):
     """Split a trailing ``.L``/``_R``/... side token off ``name``.
 
-    Returns ``(core, side)`` with ``side`` in ``{"L", "R", None}``. Only a
-    side token preceded by a separator is stripped, so a plain ``Head`` or
-    ``Chest`` (ending in a letter that isn't a separated L/R) is never
-    misread as sided.
+    Returns ``(core, side)`` with ``side`` in ``{"L", "R", None}``. A
+    separated trailing ``.L``/``_R`` token is stripped first (so a plain
+    ``Head`` or ``Chest`` is never misread as sided); failing that, a whole
+    ``Left``/``Right`` WORD leading or trailing the name is recognized
+    (``Left arm`` -> ``("arm", "L")``).
     """
+    name = name.strip()
     match = _SIDE_RE.match(name)
-    if match is None:
-        return name.strip(), None
-    return match.group(1).strip(), match.group(2).upper()
+    if match is not None:
+        return match.group(1).strip(), match.group(2).upper()
+    lead = _SIDE_WORD_LEAD_RE.match(name)
+    if lead is not None:
+        return lead.group(2).strip(), lead.group(1)[0].upper()
+    trail = _SIDE_WORD_TRAIL_RE.match(name)
+    if trail is not None:
+        return trail.group(1).strip(), trail.group(2)[0].upper()
+    return name, None
 
 
 def _parse_finger(core):

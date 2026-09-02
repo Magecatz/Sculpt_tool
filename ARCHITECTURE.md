@@ -43,6 +43,18 @@ maps to one or more Bear PR Process cards on the shared board (project
 `Sculpt_tool`); section 7 tracks current known risks and section 9
 covers testing.
 
+> **⚠️ Conform-rebuild restart (2026-09).** The surface-conform stage was
+> **rebuilt from scratch** — the old binding + fit pipeline (Mode A/B bind,
+> project against a frozen anchor, collision push-out, smoothing relaxation)
+> made unrecoverable mistakes on fitted garments and was **discarded**. The
+> **placement spine** (rig detection, canonical bone map, armature placement)
+> is retained and was improved. This document has been updated for the new
+> design; **`RESTART_SCOPE.md` is the authoritative account** of what was
+> kept, what was thrown out, the experiments that drove the decision, and the
+> two placement-stage bugs (rest-pose transfer, joint-span scaling) fixed
+> along the way. Sections 2/3/5/6 below describe the current lean conform;
+> `DECISIONS.md` still carries the historical record of the removed pipeline.
+
 ## 1. Chosen approach
 
 **A custom BVH-based bind/solve pipeline, built from first principles on
@@ -113,155 +125,88 @@ The chosen approach reuses Blender's low-level geometry primitives
 because no single built-in modifier captures "preserve per-region
 garment offset while following a different body's contours."
 
-## 2. Binding modes (the data-model core)
+## 2. Data model — the source base and the standoff
 
-A garment is bound to a **source body** (the body it was authored on),
-producing a per-vertex correspondence record. Two modes, auto-selected
-by the bind operator based on topology match, are supported:
+*(The old Mode A / Mode B binding data model — a per-vertex correspondence
+record frozen on the garment mesh at bind time — was removed in the conform
+rebuild. There is no bind step and no persisted binding attributes. The
+historical writeup is kept in `DECISIONS.md` §4.)*
 
-- **Mode A — same-topology.** Source and target body share vertex count
-  and order (e.g. the target is a shape key / sculpted morph of the same
-  base mesh — the common case for a body-shape library). Correspondence
-  is a direct `body_vertex_index`, and the offset is stored as a
-  normal-aligned local delta (normal/tangent/bitangent components at that
-  body vertex) so it reapplies correctly as the body's shape changes.
-  Cheap and exact.
-- **Mode B — cross-topology.** Source and target bodies are different
-  meshes entirely (a genuinely different/customized character). Built via
-  `BVHTree.FromPolygons` (over the source body's triangulated
-  `loop_triangles`) nearest-surface projection: each garment vertex
-  stores a signed `normal_offset` (distance off the surface) and a
-  `tangent_offset` (2D, in-plane component) to reduce misassignment near
-  seams and thin geometry, plus (as of the bind-time-freeze card, schema
-  v2) the bind-time anchor point itself — frozen in the **source body's
-  own local object space** — and the source body's `matrix_world` at that
-  same moment. The BVH nearest-surface hit's `triangle_index`/barycentric
-  weights are also stored, but as **diagnostics only**: they index into
-  the source body's own triangulation at bind time and are never read
-  back at fit time (see below). Re-evaluated against the target body's
-  BVH at fit time by transforming the frozen local anchor back to world
-  space with the frozen bind-time matrix — no read of the source body's
-  mesh at fit time at all.
-- **Mode A's "no Target Body set" trap (schema v2 fix).** A Mode A
-  binding also now stores the source body's vertex count at bind time.
-  Auto-detection needs a Target Body to compare topology against at all;
-  see below.
+The retarget is now framed as **between two known bodies**: the garment fits
+a **source base** (the body it was authored for) and is retargeted onto a
+**target base**. The only per-garment "authoring" datum the conform needs is
+the **standoff** — the signed distance each garment vertex was authored to
+sit off its own body, along the body-surface normal (positive = loose/off the
+body; ~0 = hugging; negative = cinched into the surface). It is computed
+**on demand at conform time**, not stored:
 
-Binding data is persisted as **custom attributes on the garment mesh**
-(`bpy.types.Mesh.attributes`), plus object-level custom properties
-recording the source body's name, binding mode, and a schema version.
-This means a bound garment stays bound across file save/reload with no
-external cache file, and undo works normally. No dependency is taken on
-UV-space correspondence for v1 (see Risks — noted as a possible future
-Mode C).
+- **Source-measured (preferred).** When the user supplies the source base
+  mesh (`settings.source_body`), each garment vertex's standoff is measured
+  against the source body's surface (`core.conform.authored_standoff`, via a
+  `TargetContext` BVH). This is the faithful value — a loose strap keeps its
+  large standoff, a tight waistband ~0.
+- **Source-free fallback.** When no source base is available, standoff is
+  approximated from the *placed* garment against the target: how far each
+  placed vertex sits **outside** the target surface, with interpenetration
+  clamped to 0 (`core.conform.placed_standoff`). Loose regions genuinely off
+  the body are preserved; girth interpenetration is pulled onto the surface.
 
-**Binding is bind-time-frozen — no add-on output may re-enter as input
-(schema v2, closes cards 089ab86f, 1f8e8594, and a third, previously
-uncarded defect in the same family; see DECISIONS.md §4 for the full
-writeup of all three, and section 7 row 11 for current status):**
+Nothing is persisted on the garment mesh except the conform **output** — a
+`Fitted` shape key (section 3). The source base is a live input, not a frozen
+snapshot, so there is no schema-version or bind-time-freeze machinery.
 
-- **Mode B's anchor is a bind-time snapshot, not a live re-derivation.**
-  `project_mode_b` never reads the source body's mesh, never resolves the
-  source body object by name, and never fails because the source body was
-  renamed, deleted, or edited after bind — the frozen local-space anchor
-  plus the frozen bind-time `matrix_world` are the only Mode B fit-time
-  inputs besides the target body. Editing/re-sculpting/deleting/renaming
-  the source body after bind has **no effect at all** on a Mode B fit.
-- **No output of this add-on may ever be an input to it.** Bind reads the
-  garment's (and source body's) evaluated mesh; if either object's
-  `Fitted` shape key (this add-on's own bake — see section 3 step 4) is
-  present and active, that read must not include its contribution.
-  `operators/op_bind.py` enforces this by temporarily muting the `Fitted`
-  key block around the bind-time evaluated-mesh read and restoring it
-  after, deliberately leaving garment-side *modifiers* (and every other
-  shape key) untouched — only this add-on's own bake is excluded.
-- **Auto-detect refuses rather than guesses with no Target Body
-  declared.** `detect_bind_mode` raises rather than defaulting to Mode A
-  when Target Body isn't set yet — there is nothing to compare topology
-  against, so guessing Mode A here is exactly what let a mismatched Mode
-  A bind through silently (see DECISIONS.md §4, Part C). A forced Mode A/B
-  override still bypasses this function entirely, per its own escape
-  hatch below.
-- **Schema version is enforced, not just recorded.** `SCHEMA_VERSION` is
-  2. A v1 binding (predates the frozen Mode B anchor and the Mode A
-  source vertex count) is refused at fit time with a clear "re-bind"
-  message (`storage.BindingVersionError`, a `ValueError` subclass) rather
-  than being silently misread or falling back to degraded v1 behavior.
+## 3. Conform pipeline (applied per target body)
 
-## 3. Fit pipeline (applied per target body)
+The pipeline (`operators/op_conform.py`, `OT_conform`) is deliberately small:
+**place → standoff → project → bake.** No collision push-out, no smoothing
+relaxation — the A-vs-B experiment showed those were the cause of the old
+pipeline's inflation, not the correspondence itself (RESTART_SCOPE.md §5).
 
-0. **Armature placement (Stage 1 / stage 0 of the fit)** — when the garment
-   and the target base are both rigged and `auto_pose_transfer` is on, the
-   garment's own armature is first **placed** onto the target base's
-   skeleton, bone by bone through the canonical humanoid bone map
-   (`core/rig_map.py`), with the garment deforming through its own skin
+1. **Armature placement** — when the garment and target base are both rigged
+   and `auto_pose_transfer` is on, the garment's own armature is placed onto
+   the target base's skeleton, bone by bone through the canonical humanoid
+   bone map (`core/rig_map.py`), the garment deforming through its own skin
    weights. Placement is a full per-bone transform — **position + rotation +
-   along-bone length-scale** (roadmap R7, `core/pose.compute_bone_placements`)
-   — so each clothing region is moved, turned, AND sized to the matching
-   part of the target base (a garment authored for a shorter/lower base no
-   longer lands too low or too small). It is a no-op when the two skeletons
-   already coincide, so a co-posed same-proportion pair is unchanged. Batch
-   places per target base.
+   along-bone length-scale** (`core/pose.compute_bone_placements`) — so each
+   clothing region is moved, turned, and sized to the matching part of the
+   target base. Two properties matter for cross-base correctness:
 
-   The per-bone rotation is **rest-orientation-compensated** (fix A,
-   DECISIONS.md §7): placement carries only the target's pose *delta* onto
-   each garment bone's own rest orientation, so a rest-pose target injects
-   no twist. An earlier version slammed the target bone's absolute
-   orientation on instead, which twisted skinned regions by up to ~143°
-   wherever the two rigs' rest frames differed (breast/thumb/toe helpers
-   worst) — the dominant cause of the mangled early renders.
+   - **Rotation aims along the target bone's direction** via a minimal-arc
+     swing from the garment bone's own rest direction — so a garment authored
+     in one **rest pose** (T-pose) correctly follows a target base in a
+     *different* rest pose (A-pose), while copying none of the target's
+     roll/axis convention (no skinned-region twist). Co-posed bones get an
+     identity swing and are unchanged. *(Fixes the "sleeves floated off the
+     arms on Venus" bug — RESTART_SCOPE.md §9.)*
+   - **Length-scale uses the target's joint-to-joint span**, not the target
+     bone's own length, so a base whose primary bones stop short of the next
+     joint (the segment carried by twist bones, e.g. Venus's forearm) does
+     not under-scale the garment. `max`-guarded so bases that already span
+     their segments are unchanged. *(Fixes "sleeves/pants too short".)*
 
-   When placement runs, the surface steps below **conform the placed
-   garment** (`core/pipeline.conform_placed`, roadmap R8 + fix B2). This is
-   an **offset-preserving reprojection**: for each placed vertex it takes a
-   *fresh* nearest-surface correspondence on the target (a good match
-   precisely because placement already put each region near the right body
-   part) and reapplies the garment's **authored** body-relative standoff
-   (the binding's stored `normal_offset`) there — blended against the placed
-   position by how loose the vertex was authored, so loose geometry (open
-   panels, straps, rolled cuffs) keeps its silhouette instead of being
-   shrink-wrapped flat, while tight geometry conforms to the new body's
-   girth. Optional collision + smoothing then relax residual noise (rest
-   edge lengths from the *placed* mesh so a scaled placement isn't shrunk
-   back), and a boundary straighten cleans open rims. The operator bakes the
-   result and hides the garment's live Armature modifier so the placement —
-   already in the bake — isn't applied twice. This closes the former
-   coupling where the surface projection ignored the placement and re-used
-   the frozen bind-time correspondence. **Remaining:** the offset reapply
-   uses the target surface normal only (in-plane tangent residuals dropped
-   for stability); loose open boundaries still carry some residual
-   distortion. See DECISIONS.md §6–§7 and §7 row 18.
-1. **Project** — re-evaluate each garment vertex's stored binding against
-   the target body's current BVH/vertex positions → raw fitted position.
-2. **Collision resolution** — BVH-based penetration test against the
-   target body; any garment vertex found inside the body is pushed out
-   along the binding's own anchor normal (not the locally-nearest
-   triangle's face normal — see DECISIONS.md §1b) by at least the user's
-   collision-margin parameter, re-querying up to a small bounded number of
-   times and falling back to the anchor point itself if still inside.
-   Thin-geometry tunneling is fixed via a second, anchor-based
-   `BVHTree.ray_cast` check (see DECISIONS.md §1a).
-3. **Smoothing / relaxation** — Laplacian-style relaxation pass, weighted
-   by `(1 - pin_weight)` per vertex so pinned regions don't move, and
-   constrained against the garment's own original edge lengths so the
-   pass smooths noise from steps 1–2 without shrink-wrapping the garment
-   flat. Because this step has no notion of the target body and can push
-   an already-cleared vertex back into it, step 2 (collision resolution)
-   runs a second time on step 3's output when both are enabled — see
-   DECISIONS.md §1b.
-4. **Bake** — result is written to a Shape Key named `Fitted` on the
-   garment object (created fresh or overwritten), never mutating base
-   mesh data. This sidesteps a hard platform limitation: Blender's Python
-   API cannot author a new entry in the traditional C-level modifier
-   stack, so "live modifier" is not achievable in pure `bpy`. A Shape Key
-   is the idiomatic non-destructive equivalent — it's undoable, can be
-   blended with existing shape keys/animation, and requires no custom
-   modifier plumbing.
+2. **Standoff** — the garment's authored body-relative standoff (section 2):
+   source-measured when a source base is set, else the source-free placed
+   approximation.
 
-Steps 2 and 3 are independently toggleable per the parameters below (the
-post-smoothing re-run of step 2 follows step 2's own toggle — it never
-runs if collision resolution is disabled, and never runs if smoothing
-didn't, since there is then nothing new for it to re-check).
+3. **Project** — each placed vertex is projected onto the nearest target-body
+   surface point and its standoff reapplied along that surface normal
+   (`core.conform.project_to_target`). This single step resolves girth (a
+   fatter/thinner target moves the surface and the garment follows) and
+   preserves the garment's silhouette (tight stays tight, loose stays loose).
+
+4. **Bake** — result is written to a Shape Key named `Fitted` on the garment
+   object (created fresh or overwritten), never mutating base mesh data, and
+   the garment's live Armature modifier is muted so the placement (already in
+   the bake) is not applied twice. A Shape Key is Blender's idiomatic
+   non-destructive equivalent of a live modifier (the Python API cannot
+   author a new C-level modifier-stack entry) — undoable, blendable with
+   animation, no custom plumbing.
+
+*(Optional collision/elastic polish for genuinely-loose or deeply-
+interpenetrating garments is deferred until a specific case demonstrably
+needs it — RESTART_SCOPE.md §5. A boundary-only rim relax was trialled and
+declined: the residual raggedness on the test garment is mostly authored
+frayed-edge detail, not a conform defect.)*
 
 ## 4. Blender integration surface
 
@@ -278,27 +223,32 @@ didn't, since there is then nothing new for it to re-check).
   in the codebase. Split into its own card, `1f564161` (To-Do); see
   section 7.
 - **Operators** (`bpy.types.Operator`):
-  - `OT_bind_garment` — computes and stores the binding (Mode A or B,
-    auto-detected) between the active garment and a chosen source body.
-  - `OT_fit_garment` — runs the fit pipeline (project → collision →
-    smooth → bake) against a chosen target body.
-  - `OT_batch_fit` — runs `OT_fit_garment`'s pipeline once per object in
-    a target Collection, producing one fitted output per target body. It
-    and `OT_fit_garment` share the place→align→conform sequence via
-    `operators/_fit_common.place_and_conform` (no batch-specific solver
-    logic — ARCHITECTURE §8).
-  - Small helper operators for pin vertex-group management (create/
-    assign/remove a pin group from the active selection).
+  - `OT_detect_rigs` + `OT_compute_bone_map` (+ bone-override add/remove) —
+    rig detection and the canonical garment↔target-base bone map
+    (`operators/op_bases.py`).
+  - `OT_pose_to_target` — the standalone placement stage (position + rotation
+    + scale), runnable on its own for inspection (`operators/op_pose.py`).
+  - `OT_conform` — the full conform pipeline (place → standoff → project →
+    bake) against a chosen target body (`operators/op_conform.py`).
+  - Small helper operators for pin vertex-group management (create/assign/
+    remove a pin group from the active selection).
+
+  *(The old `OT_bind_garment` / `OT_fit_garment` / `OT_batch_fit` were removed
+  with the binding + fit pipeline. A Batch path over `OT_conform` is planned —
+  section 8.)*
 - **UI:** a single N-sidebar panel (3D Viewport, "Sculpt Tool" tab) with
-  sections for Binding (source body + garment pickers, Bind button),
-  Fit (target body picker, Fit button), Parameters (offset/thickness,
-  collision margin, smoothing iterations), Pin Regions (vertex-group
-  list, standard Blender weight-painting workflow), and Batch (target
-  Collection picker, Run Batch button, progress reporting).
+  sections for Base Retargeting (source/target base rig pickers, Detect Rigs,
+  Compute Bone Map + manual overrides, Place onto Target Base), Conform
+  (Target Body + optional Source Base pickers, Conform button), and Pin
+  Regions (vertex-group list, standard Blender weight-painting workflow).
 - **Settings:** a `PropertyGroup` (`properties.SCULPTTOOL_PG_settings`)
-  holding source/target object pointers, the bind-mode override, and
-  numeric parameters, attached to the garment `Object` so settings travel
-  with the object, not just the scene. It does **not** hold pin
+  holding the source/target body pointers, the source/target base-rig
+  pointers, the bone-map overrides + summary, and the `auto_pose_transfer`
+  toggle, attached to the garment `Object` so settings travel with the
+  object, not just the scene. *(The old bind-mode override and the fit
+  numeric parameters — offset scale, collision margin, smoothing iterations —
+  were removed with the pipeline that used them; the conform takes no numeric
+  parameters.)* It does **not** hold pin
   vertex-group references — there is deliberately no such field. Pin
   groups are discovered by name at read time: any vertex group on the
   garment whose name starts with `Pin_` (`core.smoothing.PIN_GROUP_PREFIX`)
@@ -315,23 +265,27 @@ didn't, since there is then nothing new for it to re-check).
 ```
 sculpt_tool/
   __init__.py            add-on registration (bl_info, register/unregister)
-  properties.py           PropertyGroup: source/target refs, bind-mode override, numeric parameters (no pin-group field -- see section 4)
-  ui_panel.py             N-sidebar panel: Binding / Fit / Parameters / Pin Regions / Batch
+  properties.py           PropertyGroup: source/target body + base-rig refs, bone-map overrides, auto_pose_transfer (no pin-group field -- see section 4)
+  ui_panel.py             N-sidebar panel: Base Retargeting / Conform / Pin Regions
   operators/
-    op_bind.py            OT_bind_garment
-    op_fit.py              OT_fit_garment
-    op_batch.py             OT_batch_fit
+    op_bases.py            OT_detect_rigs + OT_compute_bone_map + bone-override ops
+    op_pose.py              OT_pose_to_target (placement stage) + place_garment_onto_rig
+    op_conform.py           OT_conform (place -> standoff -> project -> bake)
     op_pin_groups.py        pin vertex-group helper operators
   core/
-    geometry.py             shared geometry primitives + TargetContext (target body's evaluated geometry/BVH, built once per fit)
-    binding.py             Mode A + Mode B bind computation
-    solver.py               project step: apply binding to a target body
-    collision.py            BVH-based penetration test + push-out
-    smoothing.py            pin-weighted relaxation pass + RelaxContext (garment's adjacency/edge/pin-weight invariants, built once per garment)
-    pipeline.py             fit_once (frozen-projection path) + conform_placed (placement path: offset-preserving reprojection, fix B2) + FitParams
-    quality.py              surface-quality metrics (edge distortion, looseness preservation) for the fix-C regression gate
-    storage.py               read/write binding data as mesh custom attributes
+    rig.py                  rig/armature awareness (deforming-armature resolution, bone names)
+    rig_map.py              canonical humanoid bone map across naming conventions
+    pose.py                 compute_bone_placements (swing rotation + joint-span scale) + compute_pose_rotations
+    geometry.py             shared geometry primitives + TargetContext (target body's evaluated geometry/BVH, built once per conform)
+    conform.py              authored_standoff / placed_standoff / project_to_target (Direction-B conform)
+    smoothing.py            pin-weighted relaxation + boundary helpers (retained; not used by the default conform)
+    alignment.py            gross pose/position mismatch guard (retained pure logic; not currently wired)
+    quality.py              surface-quality metrics
+    storage.py              Fitted shape-key name + residual attribute helpers
 ```
+
+*(Removed in the rebuild: `binding.py`, `solver.py`, `collision.py`,
+`pipeline.py` — the old bind/project/collision/fit pipeline.)*
 
 Each `core/` module is pure logic operating on mesh data (testable
 outside the UI, and actually exercised that way — see section 9) and
@@ -352,11 +306,15 @@ passes instead of being rebuilt redundantly.
 
 ## 6. Parameters exposed to the user
 
-- **Offset / thickness scale** — global multiplier on the stored binding
-  offset (lets a user tighten/loosen the fit without re-binding).
-- **Collision margin** — minimum garment-to-body clearance enforced by
-  the collision pass.
-- **Smoothing iterations** — relaxation pass iteration count.
+- **Source / Target Body** — the meshes the garment was authored for (used
+  for source-measured standoff; optional) and the body to retarget onto.
+- **Source / Target Base Rig** — the armatures the placement bridges (usually
+  auto-filled by Detect Rigs), plus manual bone-map overrides.
+- **Auto Pose Transfer** — whether Conform runs the armature placement stage
+  before the surface conform (on by default; a no-op for a co-posed pair).
+
+  *(The old fit numeric parameters — offset/thickness scale, collision margin,
+  smoothing iterations — were removed with the pipeline that used them.)*
 - **Pin regions** — one or more vertex groups (e.g. `Pin_Collar`,
   `Pin_Cuff_L`, `Pin_Cuff_R`, `Pin_Hem`) whose weight blends a vertex
   between "fully solved" and "rigid, unchanged" — keeps collars/cuffs/
@@ -447,6 +405,12 @@ between when the Developer's worktree branched and when this restructure
 reached Review. See DECISIONS.md §5.
 
 ## 8. Batch/automated extension
+
+> **Status: not yet reimplemented.** `OT_batch_fit` and its shared
+> `place_and_conform` sequence were removed with the old fit pipeline. A Batch
+> path over `OT_conform` is planned but not built. The design intent below is
+> retained as the target for that work — a thin orchestration layer that calls
+> the same `core.conform` per target with no batch-specific logic.
 
 `OT_batch_fit` is the intended batch entry point: point it at a
 Collection of target body objects and it runs the full per-target
