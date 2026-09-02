@@ -31,6 +31,24 @@ Shape Key.
 
 from mathutils import Vector
 
+# Minimum clearance the source-free fallback holds the garment off the target
+# surface, as a fraction of the target's bounding-box diagonal. Without a
+# source base an interpenetrating vertex is clamped to the surface; landing it
+# at EXACTLY zero clearance makes the garment co-planar with the body and
+# z-fights (the mottled belly on the source-free Bunny Suit). A few-mm lift
+# removes that without a visible gap. Not used on the source-measured path,
+# where a vertex authored to hug (standoff ~0) must stay hugging.
+_MIN_CLEARANCE_FRAC = 0.002
+
+
+def _bbox_diagonal(positions):
+    """Bounding-box diagonal length of a set of positions, or 0.0 if empty."""
+    if not positions:
+        return 0.0
+    lo = [min(p[i] for p in positions) for i in range(3)]
+    hi = [max(p[i] for p in positions) for i in range(3)]
+    return ((hi[0] - lo[0]) ** 2 + (hi[1] - lo[1]) ** 2 + (hi[2] - lo[2]) ** 2) ** 0.5
+
 
 def authored_standoff(rest_positions, source_ctx):
     """Signed distance each garment vertex sits off the SOURCE body surface,
@@ -65,19 +83,23 @@ def placed_standoff(placed_positions, target_ctx):
     girth error). This approximation keeps what we *can* trust: a vertex the
     armature placed genuinely off the body -- a loose strap, an open panel --
     stays that far off (positive standoff preserved), while a vertex the
-    placement left inside the target (girth interpenetration) is pulled onto
-    the surface (clamped to 0). Tight garments conform cleanly; loose
-    silhouettes are approximated rather than lost.
+    placement left inside the target (girth interpenetration) is pulled to a
+    small minimum clearance off the surface (``_MIN_CLEARANCE_FRAC`` of the
+    target bbox diagonal) rather than exactly onto it, so the garment doesn't
+    end up co-planar with the body and z-fight. Tight garments conform
+    cleanly; loose silhouettes are approximated rather than lost.
 
     Prefer :func:`authored_standoff` with a real source base whenever one is
     available -- this is the degraded path (see RESTART_SCOPE.md section 5).
     """
     bvh = target_ctx.bvh
+    min_clearance = _MIN_CLEARANCE_FRAC * _bbox_diagonal(target_ctx.positions)
     standoff = []
     for position in placed_positions:
         placed = Vector(position)
         location, normal, index, _distance = bvh.find_nearest(placed)
-        standoff.append(max(0.0, (placed - location).dot(normal)) if index is not None else 0.0)
+        outside = (placed - location).dot(normal) if index is not None else 0.0
+        standoff.append(max(min_clearance, outside))
     return standoff
 
 

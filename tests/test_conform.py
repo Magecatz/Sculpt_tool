@@ -110,15 +110,19 @@ class ConformTubeTest(unittest.TestCase):
         fitted = conform.project_to_target(placed, standoff, self._ctx(target))
         self.assertAlmostEqual(_mean(_radii(fitted)), 2.5, delta=0.05)
 
-    def test_placed_standoff_clamps_interpenetration(self):
+    def test_placed_standoff_clamps_interpenetration_to_min_clearance(self):
         # A garment the placement left INSIDE the target (r=1.2 in r=2.0) is
-        # clamped to 0 and pulled onto the surface (hug), not left inside.
+        # pulled to a small MINIMUM clearance off the surface (not exactly
+        # onto it -- that would z-fight), not left inside.
         target = common.make_tube("Target", radius=2.0, height=4.0)
         inside = common.make_tube("Inside", radius=1.2, height=2.0)
+        ctx = self._ctx(target)
         placed = common.world_positions(inside)
-        standoff = conform.placed_standoff(placed, self._ctx(target))
-        self.assertAlmostEqual(_mean(standoff), 0.0, delta=0.02)
-        fitted = conform.project_to_target(placed, standoff, self._ctx(target))
+        standoff = conform.placed_standoff(placed, ctx)
+        expected = conform._MIN_CLEARANCE_FRAC * conform._bbox_diagonal(ctx.positions)
+        self.assertGreater(_mean(standoff), 0.0)
+        self.assertAlmostEqual(_mean(standoff), expected, delta=expected * 0.25)
+        fitted = conform.project_to_target(placed, standoff, ctx)
         self.assertAlmostEqual(_mean(_radii(fitted)), 2.0, delta=0.05)
 
     def test_length_mismatch_raises(self):
