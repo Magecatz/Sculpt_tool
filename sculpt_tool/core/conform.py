@@ -29,6 +29,27 @@ Shape Key.
 
 from mathutils import Vector
 
+# Loose-vertex ramp (see project_to_target). A garment vertex authored within
+# _LOOSE_NEAR_FRAC of the body (as a fraction of the target's bounding-box
+# diagonal) is fully projected onto the target surface -- that's where girth
+# mismatch interpenetrates and where nearest-surface correspondence is stable
+# and wanted. A vertex authored farther off than _LOOSE_FAR_FRAC (a draped
+# sleeve, an open jacket panel, a loose strap) KEEPS its armature-placed
+# position instead: projecting it scatters the piece (adjacent loose verts snap
+# to different body regions), and the skeleton already carries the loose shape
+# correctly. Between the two the weight ramps smoothly so there's no seam.
+_LOOSE_NEAR_FRAC = 0.012
+_LOOSE_FAR_FRAC = 0.06
+
+
+def _bbox_diagonal(positions):
+    """Bounding-box diagonal length of a set of positions, or 0.0 if empty."""
+    if not positions:
+        return 0.0
+    lo = [min(p[i] for p in positions) for i in range(3)]
+    hi = [max(p[i] for p in positions) for i in range(3)]
+    return ((hi[0] - lo[0]) ** 2 + (hi[1] - lo[1]) ** 2 + (hi[2] - lo[2]) ** 2) ** 0.5
+
 
 def authored_standoff(rest_positions, source_ctx):
     """Signed distance each garment vertex sits off the SOURCE body surface,
@@ -79,21 +100,32 @@ def placed_standoff(placed_positions, target_ctx):
     return standoff
 
 
-def project_to_target(placed_positions, standoff, target_ctx):
+def project_to_target(placed_positions, standoff, target_ctx, keep_loose=True):
     """Conform armature-PLACED garment vertices to the target body (Direction
     B, minimal).
 
     For each placed vertex, find the nearest point on the target surface and
     put the vertex that vertex's authored ``standoff`` off it, along the target
     surface normal there. That single step both resolves girth (a fatter/
-    thinner target moves the surface, and the garment follows) and preserves
-    the garment's silhouette (tight stays tight, loose stays loose) -- with no
-    collision push-out or smoothing to inflate or shrink-wrap it.
+    thinner target moves the surface, and the garment follows) and preserves a
+    tight garment's silhouette -- with no collision push-out or smoothing to
+    inflate or shrink-wrap it.
+
+    ``keep_loose`` (default) adds the loose-vertex ramp: the projection above
+    scatters vertices authored FAR off the body (draped sleeves, open jacket
+    panels, loose straps), because adjacent loose verts snap to different body
+    regions. So a vertex whose ``abs(standoff)`` exceeds
+    :data:`_LOOSE_FAR_FRAC` of the target's bounding-box diagonal keeps its
+    armature-PLACED position instead (the skeleton already carries the loose
+    shape); a vertex within :data:`_LOOSE_NEAR_FRAC` is fully projected; between
+    the two the result is a smooth lerp. This is what lets a tight top/pants and
+    a loose open jacket conform correctly in the same pass. Pass
+    ``keep_loose=False`` for the pure projection (every vertex projected).
 
     ``placed_positions`` are world-space garment vertices after armature
-    placement; ``standoff`` is :func:`authored_standoff`'s output (or any
-    per-vertex signed standoff); ``target_ctx`` is a
-    ``core.geometry.TargetContext`` for the target body. A vertex whose
+    placement; ``standoff`` is :func:`authored_standoff`'s output (or
+    :func:`placed_standoff`'s, or any per-vertex signed standoff); ``target_ctx``
+    is a ``core.geometry.TargetContext`` for the target body. A vertex whose
     projection misses the surface keeps its placed position.
 
     Returns world-space fitted positions (``mathutils.Vector`` per vertex, in
@@ -108,9 +140,32 @@ def project_to_target(placed_positions, standoff, target_ctx):
             f"{len(placed_positions)} (must be one standoff per placed vertex)."
         )
     bvh = target_ctx.bvh
+
+    near = far = span = 0.0
+    if keep_loose:
+        diagonal = _bbox_diagonal(target_ctx.positions)
+        near = _LOOSE_NEAR_FRAC * diagonal
+        far = _LOOSE_FAR_FRAC * diagonal
+        span = max(far - near, 1e-9)
+
     fitted = []
     for position, offset in zip(placed_positions, standoff):
         placed = Vector(position)
         location, normal, index, _distance = bvh.find_nearest(placed)
-        fitted.append(location + normal * offset if index is not None else placed)
+        if index is None:
+            fitted.append(placed)
+            continue
+        projected = location + normal * offset
+        if not keep_loose:
+            fitted.append(projected)
+            continue
+        # Ramp: 1 (fully project) when authored tight, 0 (keep placed) when loose.
+        magnitude = abs(offset)
+        if magnitude <= near:
+            weight = 1.0
+        elif magnitude >= far:
+            weight = 0.0
+        else:
+            weight = 1.0 - (magnitude - near) / span
+        fitted.append(placed.lerp(projected, weight))
     return fitted

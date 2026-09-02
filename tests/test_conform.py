@@ -58,7 +58,7 @@ class ConformTubeTest(unittest.TestCase):
 
         standoff = self._standoff(garment, source)
         fitted = conform.project_to_target(
-            common.world_positions(garment), standoff, self._ctx(target)
+            common.world_positions(garment), standoff, self._ctx(target), keep_loose=False
         )
         self.assertAlmostEqual(_mean(_radii(fitted)), 2.2, delta=0.05)
 
@@ -69,7 +69,7 @@ class ConformTubeTest(unittest.TestCase):
 
         standoff = self._standoff(garment, source)
         fitted = conform.project_to_target(
-            common.world_positions(garment), standoff, self._ctx(target)
+            common.world_positions(garment), standoff, self._ctx(target), keep_loose=False
         )
         self.assertAlmostEqual(_mean(_radii(fitted)), 0.7, delta=0.05)
 
@@ -82,7 +82,7 @@ class ConformTubeTest(unittest.TestCase):
         standoff = self._standoff(garment, source)
         self.assertAlmostEqual(abs(_mean(standoff)), 0.0, delta=0.02)
         fitted = conform.project_to_target(
-            common.world_positions(garment), standoff, self._ctx(target)
+            common.world_positions(garment), standoff, self._ctx(target), keep_loose=False
         )
         self.assertAlmostEqual(_mean(_radii(fitted)), 2.0, delta=0.05)
 
@@ -95,9 +95,32 @@ class ConformTubeTest(unittest.TestCase):
 
         standoff = self._standoff(garment, source)
         fitted = conform.project_to_target(
-            common.world_positions(garment), standoff, self._ctx(target)
+            common.world_positions(garment), standoff, self._ctx(target), keep_loose=False
         )
         self.assertAlmostEqual(_mean(_radii(fitted)), 1.9, delta=0.05)
+
+    def test_loose_vertex_keeps_placed_position(self):
+        # A vertex authored FAR off the body (standoff 0.6, well past the far
+        # ramp threshold ~0.42 for this target) keeps its placed position (a
+        # r=3.0 tube) instead of being pulled to the projected r=2.6.
+        target = common.make_tube("Target", radius=2.0, height=4.0)
+        placed = common.make_tube("Placed", radius=3.0, height=2.0)
+        positions = common.world_positions(placed)
+        fitted = conform.project_to_target(
+            positions, [0.6] * len(positions), self._ctx(target)
+        )  # keep_loose default True
+        self.assertAlmostEqual(_mean(_radii(fitted)), 3.0, delta=0.05)
+
+    def test_tight_vertex_projects_under_ramp(self):
+        # A vertex authored tight (standoff 0.05, under the near threshold)
+        # is fully projected even with keep_loose on: r=1.0 placed -> ~r=2.05.
+        target = common.make_tube("Target", radius=2.0, height=4.0)
+        placed = common.make_tube("Placed", radius=1.0, height=2.0)
+        positions = common.world_positions(placed)
+        fitted = conform.project_to_target(
+            positions, [0.05] * len(positions), self._ctx(target)
+        )
+        self.assertAlmostEqual(_mean(_radii(fitted)), 2.05, delta=0.05)
 
     def test_placed_standoff_keeps_loose_region(self):
         # A garment the placement left OUTSIDE the target (r=2.5 over r=2.0)
