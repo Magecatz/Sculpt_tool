@@ -51,6 +51,8 @@ BASES = {
     "Egirl": ("vrbase_Egirl_Heeled Foot.fbx", "BODY"),
     "Fantasy": ("vrbase_Fantasy_Heeled Foot.fbx", "BODY"),
     "Venus": ("Project Venus_v2.02.fbx", "Body"),
+    "RP": ("RP Female Base_Heeled Foot.fbx", "Body"),
+    "ZinPia": ("ZinPia_Fit Base HEELED Foot High Poly.fbx", "ZIN_FIT BASE"),
 }
 # The Tech Set was authored for ZinPia (its rig shares ZinPia's bone naming),
 # so ZinPia is its Source Base for the standoff measurement (RESTART_SCOPE.md).

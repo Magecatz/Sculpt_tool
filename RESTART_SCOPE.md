@@ -276,10 +276,18 @@ On branch `claude/conform-followups`, from combos/matrix investigation:
   garments and leaves tight ones and the sleeves alone (regression-checked
   on Tech Set -> Venus).
 
-**Validation matrix** (each garment on its swapped/A-pose base): Tech Set,
-bodysuit, Summer Set, cyber crop, Hood Crop, Bunny Suit, E-girl set all
-conform correctly. Residual raggedness on some pieces is authored cutout/hem
-detail, not a conform defect.
+- **Batch operator (P5) implemented**: `OT_batch_conform` conforms every
+  selected garment onto its Target Body in one pass (a whole outfit), via a
+  shared `op_conform.run_conform` -- no batch-specific pipeline. +tests
+  (skip-unconfigured, all-unconfigured errors); validated on the full Tech
+  Set -> Venus in one call (`renders/batch_demo.py`).
 
-**Still deferred:** Batch operator (throughput convenience), open-edge rim
-polish (mostly authored detail), general source-free approximation quality.
+**Validation matrix** -- the full Tech Set conforms correctly on ALL five
+bases (Egirl, Fantasy, Venus A-pose cross-creator, RP, ZinPia self-base); and
+bodysuit, Summer Set, cyber crop, Hood Crop, Bunny Suit, E-girl set each
+conform on their swapped bases. Residual raggedness on some pieces is authored
+cutout/hem detail, not a conform defect. Suite 91 green.
+
+**Still deferred / accepted:** open-edge rim polish (mostly authored detail),
+general source-free approximation quality (the source base is the quality
+path), and a second Batch mode (one garment -> many target bodies).
