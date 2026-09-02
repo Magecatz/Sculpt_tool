@@ -256,3 +256,38 @@ a specific case demonstrably needs it.
 Fantasy (T-pose) and Venus (A-pose, cross-creator). Remaining: ragged
 open-edge rims on the open sweater (cuffs/front) — a boundary-only relax is
 the next candidate polish.
+
+## 10. Follow-up fixes (post-merge of PR #44)
+
+On branch `claude/conform-followups`, from combos/matrix investigation:
+
+- **Side-word bone naming** (already in #44's tail): `rig_map` now recognizes
+  `Left arm` / `Right elbow` / `Left wrist` (side as a word, not a `.L`
+  suffix) -- the Bunny Suit's arm chain was fully unmapped, floating its wrist
+  cuffs at the T-pose rest.
+- **Source-free min clearance**: `placed_standoff` holds the garment a few mm
+  off the body instead of clamping interpenetration to exactly 0, so a
+  source-free garment doesn't land co-planar with the skin and z-fight (the
+  mottled Bunny Suit belly).
+- **Loose-vertex ramp restored**: the flared E-girl pant legs tore under pure
+  projection (loose geometry scatters). The loose-keep + spatial-coherence
+  ramp is back in `project_to_target` (removed earlier while the rest-pose
+  bug masked its value); with posing now correct it fixes flared/draped
+  garments and leaves tight ones and the sleeves alone (regression-checked
+  on Tech Set -> Venus).
+
+- **Batch operator (P5) implemented**: `OT_batch_conform` conforms every
+  selected garment onto its Target Body in one pass (a whole outfit), via a
+  shared `op_conform.run_conform` -- no batch-specific pipeline. +tests
+  (skip-unconfigured, all-unconfigured errors); validated on the full Tech
+  Set -> Venus in one call (`renders/batch_demo.py`).
+
+**Validation matrix** -- the full Tech Set conforms correctly on ALL five
+bases (Egirl, Fantasy, Venus A-pose cross-creator, RP, ZinPia self-base); and
+bodysuit, Summer Set, cyber crop, Hood Crop, Bunny Suit, E-girl set each
+conform on their swapped bases. Residual raggedness on some pieces is authored
+cutout/hem detail, not a conform defect. Suite 91 green.
+
+**Still deferred / accepted:** open-edge rim polish (mostly authored detail),
+general source-free approximation quality (the source base is the quality
+path), and a second Batch mode (one garment -> many target bodies).

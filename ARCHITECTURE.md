@@ -406,13 +406,18 @@ reached Review. See DECISIONS.md §5.
 
 ## 8. Batch/automated extension
 
-> **Status: not yet reimplemented.** `OT_batch_fit` and its shared
-> `place_and_conform` sequence were removed with the old fit pipeline. A Batch
-> path over `OT_conform` is planned but not built. The design intent below is
-> retained as the target for that work — a thin orchestration layer that calls
-> the same `core.conform` per target with no batch-specific logic.
+> **Status: reimplemented as `OT_batch_conform` (outfit batch).** It conforms
+> every SELECTED mesh garment onto its own Target Body in one pass — fitting a
+> whole multi-piece outfit at once — by calling the shared
+> `operators/op_conform.run_conform` per garment (the exact single-garment
+> sequence; no batch-specific pipeline, per this section). A garment that
+> isn't set up (no Target Body, unusable Source Base) is skipped with a
+> warning rather than aborting the rest. This is the garment-selection ("many
+> garments → one target each") batch; the target-Collection design sketched
+> below ("one garment → many target bodies") is a separate future mode.
 
-`OT_batch_fit` is the intended batch entry point: point it at a
+The original `OT_batch_fit` was instead the intended entry point for the
+per-target-Collection mode: point it at a
 Collection of target body objects and it runs the full per-target
 pipeline (pose → project → collision → smooth → bake) once per object,
 writing one `Fitted_<target>` shape key per target. It is a thin

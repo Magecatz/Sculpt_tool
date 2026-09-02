@@ -58,7 +58,7 @@ class ConformTubeTest(unittest.TestCase):
 
         standoff = self._standoff(garment, source)
         fitted = conform.project_to_target(
-            common.world_positions(garment), standoff, self._ctx(target)
+            common.world_positions(garment), standoff, self._ctx(target), keep_loose=False
         )
         self.assertAlmostEqual(_mean(_radii(fitted)), 2.2, delta=0.05)
 
@@ -69,7 +69,7 @@ class ConformTubeTest(unittest.TestCase):
 
         standoff = self._standoff(garment, source)
         fitted = conform.project_to_target(
-            common.world_positions(garment), standoff, self._ctx(target)
+            common.world_positions(garment), standoff, self._ctx(target), keep_loose=False
         )
         self.assertAlmostEqual(_mean(_radii(fitted)), 0.7, delta=0.05)
 
@@ -82,7 +82,7 @@ class ConformTubeTest(unittest.TestCase):
         standoff = self._standoff(garment, source)
         self.assertAlmostEqual(abs(_mean(standoff)), 0.0, delta=0.02)
         fitted = conform.project_to_target(
-            common.world_positions(garment), standoff, self._ctx(target)
+            common.world_positions(garment), standoff, self._ctx(target), keep_loose=False
         )
         self.assertAlmostEqual(_mean(_radii(fitted)), 2.0, delta=0.05)
 
@@ -95,7 +95,7 @@ class ConformTubeTest(unittest.TestCase):
 
         standoff = self._standoff(garment, source)
         fitted = conform.project_to_target(
-            common.world_positions(garment), standoff, self._ctx(target)
+            common.world_positions(garment), standoff, self._ctx(target), keep_loose=False
         )
         self.assertAlmostEqual(_mean(_radii(fitted)), 1.9, delta=0.05)
 
@@ -110,16 +110,60 @@ class ConformTubeTest(unittest.TestCase):
         fitted = conform.project_to_target(placed, standoff, self._ctx(target))
         self.assertAlmostEqual(_mean(_radii(fitted)), 2.5, delta=0.05)
 
-    def test_placed_standoff_clamps_interpenetration(self):
+    def test_placed_standoff_clamps_interpenetration_to_min_clearance(self):
         # A garment the placement left INSIDE the target (r=1.2 in r=2.0) is
-        # clamped to 0 and pulled onto the surface (hug), not left inside.
+        # pulled to a small MINIMUM clearance off the surface (not exactly
+        # onto it -- that would z-fight), not left inside.
         target = common.make_tube("Target", radius=2.0, height=4.0)
         inside = common.make_tube("Inside", radius=1.2, height=2.0)
+        ctx = self._ctx(target)
         placed = common.world_positions(inside)
-        standoff = conform.placed_standoff(placed, self._ctx(target))
-        self.assertAlmostEqual(_mean(standoff), 0.0, delta=0.02)
-        fitted = conform.project_to_target(placed, standoff, self._ctx(target))
+        standoff = conform.placed_standoff(placed, ctx)
+        expected = conform._MIN_CLEARANCE_FRAC * conform._bbox_diagonal(ctx.positions)
+        self.assertGreater(_mean(standoff), 0.0)
+        self.assertAlmostEqual(_mean(standoff), expected, delta=expected * 0.25)
+        fitted = conform.project_to_target(placed, standoff, ctx)
         self.assertAlmostEqual(_mean(_radii(fitted)), 2.0, delta=0.05)
+
+    def test_loose_vertex_keeps_placed_position(self):
+        # A vertex authored FAR off the body (standoff 0.6, past the far ramp
+        # threshold ~0.42 here) keeps its placed position (r=3.0) rather than
+        # being pulled to the projected r=2.6 -- flared/draped geometry.
+        target = common.make_tube("Target", radius=2.0, height=4.0)
+        placed = common.world_positions(common.make_tube("Placed", radius=3.0, height=2.0))
+        fitted = conform.project_to_target(placed, [0.6] * len(placed), self._ctx(target))
+        self.assertAlmostEqual(_mean(_radii(fitted)), 3.0, delta=0.05)
+
+    def test_tight_vertex_projects_under_ramp(self):
+        # A vertex authored tight (standoff 0.05, under the near threshold) is
+        # fully projected even with keep_loose on: r=1.0 placed -> ~r=2.05.
+        target = common.make_tube("Target", radius=2.0, height=4.0)
+        placed = common.world_positions(common.make_tube("Placed", radius=1.0, height=2.0))
+        fitted = conform.project_to_target(placed, [0.05] * len(placed), self._ctx(target))
+        self.assertAlmostEqual(_mean(_radii(fitted)), 2.05, delta=0.05)
+
+    def test_build_vertex_neighbors(self):
+        neighbors = conform.build_vertex_neighbors([(0, 1), (1, 2), (2, 2)], 3)
+        self.assertEqual([sorted(n) for n in neighbors], [[1], [0, 2], [1]])
+
+    def test_spatial_coherence_reduces_tearing(self):
+        # A sharp standoff split (top loose, bottom tight) makes the raw
+        # per-vertex ramp jump hard at the boundary ring; smoothing the weight
+        # over the mesh adjacency must reduce the worst adjacent gap.
+        target = common.make_tube("Target", radius=2.0, height=4.0)
+        garment = common.make_tube("Placed", radius=3.0, height=2.0)
+        positions = common.world_positions(garment)
+        standoff = [0.6 if p[2] > 0.0 else 0.0 for p in positions]
+        edges = [(e.vertices[0], e.vertices[1]) for e in garment.data.edges]
+        neighbors = conform.build_vertex_neighbors(edges, len(positions))
+        ctx = self._ctx(target)
+        raw = conform.project_to_target(positions, standoff, ctx, neighbors=None)
+        smoothed = conform.project_to_target(positions, standoff, ctx, neighbors=neighbors)
+
+        def worst_gap(fitted):
+            return max((fitted[a] - fitted[b]).length for a, b in edges)
+
+        self.assertLess(worst_gap(smoothed), worst_gap(raw))
 
     def test_length_mismatch_raises(self):
         target = common.make_tube("Target", radius=2.0, height=4.0)

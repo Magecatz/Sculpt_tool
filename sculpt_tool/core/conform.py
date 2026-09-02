@@ -31,6 +31,71 @@ Shape Key.
 
 from mathutils import Vector
 
+# Minimum clearance the source-free fallback holds the garment off the target
+# surface, as a fraction of the target's bounding-box diagonal. Without a
+# source base an interpenetrating vertex is clamped to the surface; landing it
+# at EXACTLY zero clearance makes the garment co-planar with the body and
+# z-fights (the mottled belly on the source-free Bunny Suit). A few-mm lift
+# removes that without a visible gap. Not used on the source-measured path,
+# where a vertex authored to hug (standoff ~0) must stay hugging.
+_MIN_CLEARANCE_FRAC = 0.002
+
+# Loose-vertex ramp (see project_to_target). A garment vertex whose standoff is
+# within _LOOSE_NEAR_FRAC of the body (as a fraction of the target bbox
+# diagonal) is fully projected onto the target surface -- that's where girth
+# mismatch interpenetrates and nearest-surface correspondence is stable. A
+# vertex farther off than _LOOSE_FAR_FRAC (a flared pant leg, a draped sleeve,
+# an open panel) KEEPS its armature-placed position instead: projecting loose
+# geometry scatters it (adjacent loose verts snap to different body regions,
+# projecting in different directions), and the skeleton already carries the
+# loose shape correctly. Between the two the weight ramps smoothly.
+_LOOSE_NEAR_FRAC = 0.012
+_LOOSE_FAR_FRAC = 0.06
+
+# Spatial-coherence smoothing of the project/keep-placed weight field. A purely
+# per-vertex ramp tears a garment where adjacent verts straddle the near/far
+# band (one projects, its neighbour keeps placed). Diffusing the weight over
+# the mesh adjacency this many Laplacian passes makes the boundary a gradual
+# band rather than a per-vertex step.
+_WEIGHT_SMOOTH_ITERATIONS = 15
+
+
+def build_vertex_neighbors(edge_pairs, vertex_count):
+    """Adjacency list (one list of neighbour vertex indices per vertex) from
+    ``edge_pairs`` -- ``(v0, v1)`` index tuples, e.g. a mesh's edges. Pure
+    data, so :func:`project_to_target`'s weight smoothing stays testable
+    outside Blender; the operator builds ``edge_pairs`` from the garment mesh.
+    """
+    neighbors = [[] for _ in range(vertex_count)]
+    for a, b in edge_pairs:
+        if a == b:
+            continue
+        neighbors[a].append(b)
+        neighbors[b].append(a)
+    return neighbors
+
+
+def _smooth_weights(weights, neighbors, iterations):
+    """Laplacian-diffuse a per-vertex scalar ``weights`` field over
+    ``neighbors`` for ``iterations`` passes (each vertex -> mean of its
+    neighbours), so the project/keep-placed boundary is gradual, not a step."""
+    for _ in range(iterations):
+        updated = weights[:]
+        for i, adjacent in enumerate(neighbors):
+            if adjacent:
+                updated[i] = sum(weights[j] for j in adjacent) / len(adjacent)
+        weights = updated
+    return weights
+
+
+def _bbox_diagonal(positions):
+    """Bounding-box diagonal length of a set of positions, or 0.0 if empty."""
+    if not positions:
+        return 0.0
+    lo = [min(p[i] for p in positions) for i in range(3)]
+    hi = [max(p[i] for p in positions) for i in range(3)]
+    return ((hi[0] - lo[0]) ** 2 + (hi[1] - lo[1]) ** 2 + (hi[2] - lo[2]) ** 2) ** 0.5
+
 
 def authored_standoff(rest_positions, source_ctx):
     """Signed distance each garment vertex sits off the SOURCE body surface,
@@ -65,44 +130,60 @@ def placed_standoff(placed_positions, target_ctx):
     girth error). This approximation keeps what we *can* trust: a vertex the
     armature placed genuinely off the body -- a loose strap, an open panel --
     stays that far off (positive standoff preserved), while a vertex the
-    placement left inside the target (girth interpenetration) is pulled onto
-    the surface (clamped to 0). Tight garments conform cleanly; loose
-    silhouettes are approximated rather than lost.
+    placement left inside the target (girth interpenetration) is pulled to a
+    small minimum clearance off the surface (``_MIN_CLEARANCE_FRAC`` of the
+    target bbox diagonal) rather than exactly onto it, so the garment doesn't
+    end up co-planar with the body and z-fight. Tight garments conform
+    cleanly; loose silhouettes are approximated rather than lost.
 
     Prefer :func:`authored_standoff` with a real source base whenever one is
     available -- this is the degraded path (see RESTART_SCOPE.md section 5).
     """
     bvh = target_ctx.bvh
+    min_clearance = _MIN_CLEARANCE_FRAC * _bbox_diagonal(target_ctx.positions)
     standoff = []
     for position in placed_positions:
         placed = Vector(position)
         location, normal, index, _distance = bvh.find_nearest(placed)
-        standoff.append(max(0.0, (placed - location).dot(normal)) if index is not None else 0.0)
+        outside = (placed - location).dot(normal) if index is not None else 0.0
+        standoff.append(max(min_clearance, outside))
     return standoff
 
 
-def project_to_target(placed_positions, standoff, target_ctx):
-    """Conform armature-PLACED garment vertices to the target body (Direction
-    B, minimal).
+def project_to_target(placed_positions, standoff, target_ctx, keep_loose=True,
+                      neighbors=None, weight_smooth_iterations=_WEIGHT_SMOOTH_ITERATIONS):
+    """Conform armature-PLACED garment vertices to the target body (Direction B).
 
     For each placed vertex, find the nearest point on the target surface and
-    put the vertex that vertex's authored ``standoff`` off it, along the target
-    surface normal there. That single step both resolves girth (a fatter/
-    thinner target moves the surface, and the garment follows) and preserves a
-    tight garment's silhouette -- with no collision push-out or smoothing to
-    inflate or shrink-wrap it.
+    put the vertex that vertex's ``standoff`` off it, along the target surface
+    normal there. That single step resolves girth (a fatter/thinner target
+    moves the surface and the garment follows) and preserves a tight garment's
+    silhouette -- no collision push-out or smoothing to inflate/shrink-wrap it.
+
+    ``keep_loose`` (default) adds the loose-vertex ramp: projecting a vertex
+    authored/placed FAR off the body (a flared pant leg, a draped sleeve, an
+    open panel) scatters it, because adjacent loose verts snap to different
+    body regions. So a vertex whose ``abs(standoff)`` exceeds
+    :data:`_LOOSE_FAR_FRAC` of the target bbox diagonal keeps its armature-
+    PLACED position (the skeleton already carries the loose shape); within
+    :data:`_LOOSE_NEAR_FRAC` it is fully projected; between, a smooth lerp.
+    Pass ``keep_loose=False`` for pure projection (every vertex projected).
+
+    ``neighbors`` (from :func:`build_vertex_neighbors`), when given, adds
+    spatial coherence: the per-vertex ramp weight is Laplacian-diffused over
+    the mesh adjacency ``weight_smooth_iterations`` passes before the blend, so
+    the tight->loose transition is a gradual band, not a per-vertex step (which
+    would tear the surface along the boundary).
 
     ``placed_positions`` are world-space garment vertices after armature
-    placement; ``standoff`` is :func:`authored_standoff`'s output (or
-    :func:`placed_standoff`'s, or any per-vertex signed standoff); ``target_ctx``
-    is a ``core.geometry.TargetContext`` for the target body. A vertex whose
-    projection misses the surface keeps its placed position.
+    placement; ``standoff`` is :func:`authored_standoff`'s / :func:`placed_standoff`'s
+    output (or any per-vertex signed standoff); ``target_ctx`` is a
+    ``core.geometry.TargetContext``. A vertex whose projection misses the
+    surface keeps its placed position.
 
-    Returns world-space fitted positions (``mathutils.Vector`` per vertex, in
-    vertex-index order) ready for the operator layer to bake.
-
+    Returns world-space fitted positions (``mathutils.Vector`` per vertex).
     Raises ``ValueError`` if ``standoff`` and ``placed_positions`` differ in
-    length (a caller bug -- they must be the same garment's vertices).
+    length.
     """
     if len(standoff) != len(placed_positions):
         raise ValueError(
@@ -110,9 +191,31 @@ def project_to_target(placed_positions, standoff, target_ctx):
             f"{len(placed_positions)} (must be one standoff per placed vertex)."
         )
     bvh = target_ctx.bvh
-    fitted = []
-    for position, offset in zip(placed_positions, standoff):
-        placed = Vector(position)
+
+    placed_vecs = [Vector(p) for p in placed_positions]
+    projected = []
+    for placed, offset in zip(placed_vecs, standoff):
         location, normal, index, _distance = bvh.find_nearest(placed)
-        fitted.append(location + normal * offset if index is not None else placed)
-    return fitted
+        projected.append(placed if index is None else location + normal * offset)
+
+    if not keep_loose:
+        return projected
+
+    diagonal = _bbox_diagonal(target_ctx.positions)
+    near = _LOOSE_NEAR_FRAC * diagonal
+    far = _LOOSE_FAR_FRAC * diagonal
+    span = max(far - near, 1e-9)
+    weights = []
+    for offset in standoff:
+        magnitude = abs(offset)
+        if magnitude <= near:
+            weights.append(1.0)
+        elif magnitude >= far:
+            weights.append(0.0)
+        else:
+            weights.append(1.0 - (magnitude - near) / span)
+
+    if neighbors is not None and weight_smooth_iterations > 0:
+        weights = _smooth_weights(weights, neighbors, weight_smooth_iterations)
+
+    return [placed.lerp(proj, w) for placed, proj, w in zip(placed_vecs, projected, weights)]

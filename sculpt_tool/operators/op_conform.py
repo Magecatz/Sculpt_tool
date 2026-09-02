@@ -30,6 +30,114 @@ from ..core import conform, geometry, storage
 SHAPE_KEY_NAME = storage.FITTED_SHAPE_KEY_NAME
 
 
+class ConformError(Exception):
+    """A garment can't be conformed as set up (no/invalid Target Body, an
+    unusable Source Base, a pipeline length mismatch). Carries a
+    human-readable reason; the single operator reports it and cancels, Batch
+    records it as a per-garment skip and continues."""
+
+
+def run_conform(context, garment_obj):
+    """Place + conform + bake one garment onto its Target Body (the full
+    Direction-B pipeline: place -> standoff -> project -> bake). Returns a
+    short info string on success. Raises :class:`ConformError` for a bad
+    setup and ``ValueError`` for a pipeline failure.
+
+    This is the single source of the conform sequence -- both
+    ``OT_conform`` (active object) and ``OT_batch_conform`` (each selected
+    garment) call it, so Batch adds no pipeline logic of its own
+    (ARCHITECTURE.md section 8)."""
+    settings = garment_obj.sculpt_tool
+    target_body_obj = getattr(settings, "target_body", None)
+    if target_body_obj is None or target_body_obj.type != 'MESH':
+        raise ConformError("no mesh Target Body set")
+    if target_body_obj == garment_obj:
+        raise ConformError("Target Body must be a different object from the garment")
+
+    mesh = garment_obj.data
+    vertex_count = len(mesh.vertices)
+
+    # Authored (rest) world positions from basis coords, so a previous Fitted
+    # key never feeds back in as input.
+    rest_world = [garment_obj.matrix_world @ v.co for v in mesh.vertices]
+
+    depsgraph = context.evaluated_depsgraph_get()
+    target_ctx = geometry.TargetContext.build(target_body_obj, depsgraph)
+
+    # Stage 1: placement (only when both skeletons are present).
+    garment_arm = (
+        op_bases.garment_rig(garment_obj, settings)
+        if getattr(settings, "auto_pose_transfer", True)
+        else None
+    )
+    target_arm = getattr(settings, "target_base_armature", None)
+    placed_via_armature = garment_arm is not None and target_arm is not None
+
+    if mesh.shape_keys is not None:
+        existing = mesh.shape_keys.key_blocks.get(SHAPE_KEY_NAME)
+        if existing is not None:
+            existing.value = 0.0
+
+    if placed_via_armature:
+        op_pose.set_armature_deform_visible(garment_obj, True)
+        overrides = [
+            (o.source_bone, o.target_bone)
+            for o in getattr(settings, "bone_map_overrides", ())
+            if o.source_bone
+        ]
+        op_pose.place_garment_onto_rig(context, garment_arm, target_arm, overrides)
+        context.view_layer.update()
+        depsgraph = context.evaluated_depsgraph_get()
+        placed_world, _ = geometry.world_space_positions_and_normals(garment_obj, depsgraph)
+    else:
+        placed_world = list(rest_world)
+
+    # Stage 2: standoff -- source-measured when a source base is set, else the
+    # source-free placed approximation.
+    source_body_obj = getattr(settings, "source_body", None)
+    used_source = source_body_obj is not None and source_body_obj.type == 'MESH'
+    if used_source:
+        source_ctx = geometry.TargetContext.build(source_body_obj, depsgraph)
+        standoff = conform.authored_standoff(rest_world, source_ctx)
+    else:
+        standoff = conform.placed_standoff(placed_world, target_ctx)
+
+    # Stage 3: project onto the target surface, loose-vertex ramp made
+    # spatially coherent over the garment's own edge adjacency.
+    neighbors = conform.build_vertex_neighbors(
+        [(e.vertices[0], e.vertices[1]) for e in mesh.edges], vertex_count
+    )
+    fitted_world = conform.project_to_target(
+        placed_world, standoff, target_ctx, neighbors=neighbors
+    )
+    if len(fitted_world) != vertex_count:
+        raise ValueError(
+            f"Conform produced {len(fitted_world)} positions, expected {vertex_count}."
+        )
+
+    # Stage 4: bake into the Fitted Shape Key (world -> garment-local).
+    matrix_inverse = garment_obj.matrix_world.inverted_safe()
+    fitted_local = [matrix_inverse @ co for co in fitted_world]
+    if mesh.shape_keys is None:
+        garment_obj.shape_key_add(name="Basis", from_mix=False)
+    key_block = mesh.shape_keys.key_blocks.get(SHAPE_KEY_NAME)
+    if key_block is None:
+        key_block = garment_obj.shape_key_add(name=SHAPE_KEY_NAME, from_mix=False)
+    key_block.data.foreach_set("co", [c for co in fitted_local for c in co])
+    key_block.value = 1.0
+    mesh.update()
+
+    if placed_via_armature:
+        op_pose.set_armature_deform_visible(garment_obj, False)
+        context.view_layer.update()
+
+    return (
+        f"{vertex_count} vertices, "
+        f"{'source-measured' if used_source else 'source-free'} standoff"
+        f"{', placed via armature' if placed_via_armature else ''}"
+    )
+
+
 class SCULPTTOOL_OT_conform(bpy.types.Operator):
     bl_idname = "sculpttool.conform"
     bl_label = "Conform to Target"
@@ -52,123 +160,55 @@ class SCULPTTOOL_OT_conform(bpy.types.Operator):
 
     def execute(self, context):
         garment_obj = context.object
-        settings = garment_obj.sculpt_tool
-        target_body_obj = settings.target_body
-
-        if target_body_obj is None or target_body_obj.type != 'MESH':
-            self.report({'ERROR'}, "Select a mesh Target Body before conforming.")
-            return {'CANCELLED'}
-        if target_body_obj == garment_obj:
-            self.report({'ERROR'}, "Target Body must be a different object from the garment.")
-            return {'CANCELLED'}
-
-        mesh = garment_obj.data
-        vertex_count = len(mesh.vertices)
-
-        # Authored (rest) world positions -- the garment as designed on its
-        # source base. Read from basis coordinates (shape keys are stored
-        # separately from mesh.vertices.co), so a previous Fitted key never
-        # feeds back in as input.
-        matrix_world = garment_obj.matrix_world
-        rest_world = [matrix_world @ v.co for v in mesh.vertices]
-
-        depsgraph = context.evaluated_depsgraph_get()
         try:
-            target_ctx = geometry.TargetContext.build(target_body_obj, depsgraph)
-        except ValueError as exc:
+            info = run_conform(context, garment_obj)
+        except (ConformError, ValueError) as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
-
-        # Stage 1: placement (only when both skeletons are present).
-        garment_arm = (
-            op_bases.garment_rig(garment_obj, settings)
-            if getattr(settings, "auto_pose_transfer", True)
-            else None
-        )
-        target_arm = getattr(settings, "target_base_armature", None)
-        placed_via_armature = garment_arm is not None and target_arm is not None
-
-        # Mute any existing Fitted key so the placement read reflects the
-        # authored mesh, not our own previous output.
-        if mesh.shape_keys is not None:
-            existing = mesh.shape_keys.key_blocks.get(SHAPE_KEY_NAME)
-            if existing is not None:
-                existing.value = 0.0
-
-        if placed_via_armature:
-            op_pose.set_armature_deform_visible(garment_obj, True)
-            overrides = [
-                (o.source_bone, o.target_bone)
-                for o in getattr(settings, "bone_map_overrides", ())
-                if o.source_bone
-            ]
-            op_pose.place_garment_onto_rig(context, garment_arm, target_arm, overrides)
-            context.view_layer.update()
-            depsgraph = context.evaluated_depsgraph_get()
-            placed_world, _ = geometry.world_space_positions_and_normals(garment_obj, depsgraph)
-        else:
-            placed_world = list(rest_world)
-
-        # Stage 2: standoff -- source-measured when a source base is set,
-        # else the source-free placed approximation.
-        source_body_obj = getattr(settings, "source_body", None)
-        used_source = False
-        if source_body_obj is not None and source_body_obj.type == 'MESH':
-            try:
-                source_ctx = geometry.TargetContext.build(source_body_obj, depsgraph)
-                standoff = conform.authored_standoff(rest_world, source_ctx)
-                used_source = True
-            except ValueError as exc:
-                self.report({'ERROR'}, f"Source Base unusable: {exc}")
-                return {'CANCELLED'}
-        else:
-            standoff = conform.placed_standoff(placed_world, target_ctx)
-
-        # Stage 3: project every placed vertex onto the target surface.
-        try:
-            fitted_world = conform.project_to_target(placed_world, standoff, target_ctx)
-        except ValueError as exc:
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
-
-        if len(fitted_world) != vertex_count:
-            self.report(
-                {'ERROR'},
-                f"Conform produced {len(fitted_world)} positions, expected {vertex_count}.",
-            )
-            return {'CANCELLED'}
-
-        # Stage 4: bake into the Fitted Shape Key (world -> garment-local).
-        matrix_inverse = garment_obj.matrix_world.inverted_safe()
-        fitted_local = [matrix_inverse @ co for co in fitted_world]
-
-        if mesh.shape_keys is None:
-            garment_obj.shape_key_add(name="Basis", from_mix=False)
-        key_block = mesh.shape_keys.key_blocks.get(SHAPE_KEY_NAME)
-        if key_block is None:
-            key_block = garment_obj.shape_key_add(name=SHAPE_KEY_NAME, from_mix=False)
-
-        key_block.data.foreach_set("co", [c for co in fitted_local for c in co])
-        key_block.value = 1.0
-        mesh.update()
-
-        # The placement is baked into the key; hide the live Armature deform
-        # so it is not applied a second time.
-        if placed_via_armature:
-            op_pose.set_armature_deform_visible(garment_obj, False)
-            context.view_layer.update()
-
         self.report(
             {'INFO'},
-            f"Conformed '{garment_obj.name}' to '{target_body_obj.name}' "
-            f"({vertex_count} vertices, "
-            f"{'source-measured' if used_source else 'source-free'} standoff"
-            f"{', placed via armature' if placed_via_armature else ''}).",
+            f"Conformed '{garment_obj.name}' to "
+            f"'{garment_obj.sculpt_tool.target_body.name}' ({info}).",
         )
         return {'FINISHED'}
 
 
-_classes = (SCULPTTOOL_OT_conform,)
+class SCULPTTOOL_OT_batch_conform(bpy.types.Operator):
+    bl_idname = "sculpttool.batch_conform"
+    bl_label = "Conform Selected"
+    bl_description = (
+        "Conform every SELECTED mesh garment onto its own Target Body in one "
+        "pass (fit a whole multi-piece outfit at once). Each garment uses its "
+        "own settings; one that isn't set up (no Target Body, unusable Source "
+        "Base) is skipped with a warning rather than aborting the rest"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return any(o.type == 'MESH' for o in context.selected_objects)
+
+    def execute(self, context):
+        garments = [o for o in context.selected_objects if o.type == 'MESH'
+                    and getattr(o, "sculpt_tool", None)]
+        done, skipped = 0, []
+        for garment_obj in garments:
+            try:
+                run_conform(context, garment_obj)
+                done += 1
+            except (ConformError, ValueError) as exc:
+                skipped.append(f"{garment_obj.name} ({exc})")
+        if done == 0 and skipped:
+            self.report({'ERROR'}, "Batch Conform: nothing conformed. " + "; ".join(skipped))
+            return {'CANCELLED'}
+        msg = f"Batch Conform: {done} garment(s) conformed"
+        if skipped:
+            msg += f"; {len(skipped)} skipped -- " + "; ".join(skipped)
+        self.report({'WARNING'} if skipped else {'INFO'}, msg + ".")
+        return {'FINISHED'}
+
+
+_classes = (SCULPTTOOL_OT_conform, SCULPTTOOL_OT_batch_conform)
 
 
 def register():
