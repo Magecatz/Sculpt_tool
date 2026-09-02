@@ -99,6 +99,28 @@ class ConformTubeTest(unittest.TestCase):
         )
         self.assertAlmostEqual(_mean(_radii(fitted)), 1.9, delta=0.05)
 
+    def test_placed_standoff_keeps_loose_region(self):
+        # A garment the placement left OUTSIDE the target (r=2.5 over r=2.0)
+        # keeps its ~0.5 standoff in the source-free fallback.
+        target = common.make_tube("Target", radius=2.0, height=4.0)
+        loose = common.make_tube("Loose", radius=2.5, height=2.0)
+        placed = common.world_positions(loose)
+        standoff = conform.placed_standoff(placed, self._ctx(target))
+        self.assertAlmostEqual(_mean(standoff), 0.5, delta=0.05)
+        fitted = conform.project_to_target(placed, standoff, self._ctx(target))
+        self.assertAlmostEqual(_mean(_radii(fitted)), 2.5, delta=0.05)
+
+    def test_placed_standoff_clamps_interpenetration(self):
+        # A garment the placement left INSIDE the target (r=1.2 in r=2.0) is
+        # clamped to 0 and pulled onto the surface (hug), not left inside.
+        target = common.make_tube("Target", radius=2.0, height=4.0)
+        inside = common.make_tube("Inside", radius=1.2, height=2.0)
+        placed = common.world_positions(inside)
+        standoff = conform.placed_standoff(placed, self._ctx(target))
+        self.assertAlmostEqual(_mean(standoff), 0.0, delta=0.02)
+        fitted = conform.project_to_target(placed, standoff, self._ctx(target))
+        self.assertAlmostEqual(_mean(_radii(fitted)), 2.0, delta=0.05)
+
     def test_length_mismatch_raises(self):
         target = common.make_tube("Target", radius=2.0, height=4.0)
         garment = common.make_tube("Garment", radius=1.2, height=2.0)

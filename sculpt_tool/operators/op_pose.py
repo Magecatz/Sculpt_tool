@@ -178,7 +178,7 @@ class SCULPTTOOL_OT_pose_to_target(bpy.types.Operator):
             {'INFO'},
             f"Placed '{garment_arm.name}' onto '{target_arm.name}' "
             f"({placed} bones: position + rotation + scale). "
-            "Run Fit to conform the surface.",
+            "Run Conform to fit the surface.",
         )
         return {'FINISHED'}
 

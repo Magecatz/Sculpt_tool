@@ -127,6 +127,21 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
             base_box.operator("sculpttool.pose_to_target", icon='POSE_HLT')
             base_box.prop(settings, "auto_pose_transfer")
 
+        conform_box = layout.box()
+        conform_box.label(text="Conform", icon='MOD_SHRINKWRAP')
+        if settings:
+            conform_box.prop(settings, "target_body")
+            conform_box.prop(settings, "source_body", text="Source Base (optional)")
+            # The Source Base is the body the garment was ORIGINALLY authored
+            # for -- import that base's FBX and pick its body mesh here to
+            # preserve the garment's authored standoff. Without it, standoff is
+            # approximated from the placement (loose fits are less faithful).
+            if settings.source_body is None:
+                conform_box.label(
+                    text="No Source Base: standoff approximated.", icon='INFO',
+                )
+        conform_box.operator("sculpttool.conform", icon='MOD_SHRINKWRAP')
+
         pins_box = layout.box()
         pins_box.label(text="Pin Regions", icon='GROUP_VERTEX')
         if obj is not None and obj.type == 'MESH':

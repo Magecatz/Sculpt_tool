@@ -53,6 +53,32 @@ def authored_standoff(rest_positions, source_ctx):
     return standoff
 
 
+def placed_standoff(placed_positions, target_ctx):
+    """Fallback standoff when no source base is available: how far each
+    already-placed garment vertex sits OUTSIDE the target surface, with
+    interpenetration (negative) clamped to ``0``.
+
+    Without the source body we cannot recover the authored standoff (a placed
+    vertex's distance from the target conflates the authored offset with the
+    girth error). This approximation keeps what we *can* trust: a vertex the
+    armature placed genuinely off the body -- a loose strap, an open panel --
+    stays that far off (positive standoff preserved), while a vertex the
+    placement left inside the target (girth interpenetration) is pulled onto
+    the surface (clamped to 0). Tight garments conform cleanly; loose
+    silhouettes are approximated rather than lost.
+
+    Prefer :func:`authored_standoff` with a real source base whenever one is
+    available -- this is the degraded path (see RESTART_SCOPE.md section 5).
+    """
+    bvh = target_ctx.bvh
+    standoff = []
+    for position in placed_positions:
+        placed = Vector(position)
+        location, normal, index, _distance = bvh.find_nearest(placed)
+        standoff.append(max(0.0, (placed - location).dot(normal)) if index is not None else 0.0)
+    return standoff
+
+
 def project_to_target(placed_positions, standoff, target_ctx):
     """Conform armature-PLACED garment vertices to the target body (Direction
     B, minimal).

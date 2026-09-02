@@ -45,14 +45,16 @@ CLOTH = [(0.26, 0.55, 0.72, 1.0), (0.66, 0.34, 0.50, 1.0), (0.40, 0.68, 0.48, 1.
 BODY = R.TEST_ITEMS / "Body"
 CLOTHING = R.TEST_ITEMS / "Clothing"
 
-# Base key -> (fbx, mesh object name). The source base a garment was authored
-# for is RP Female Base; the target base is whichever the user retargets onto.
+# Base key -> (fbx, mesh object name). The target base is whichever the user
+# retargets onto. Venus is a different creator's rig (cross-creator test).
 BASES = {
     "Egirl": ("vrbase_Egirl_Heeled Foot.fbx", "BODY"),
     "Fantasy": ("vrbase_Fantasy_Heeled Foot.fbx", "BODY"),
     "Venus": ("Project Venus_v2.02.fbx", "Body"),
 }
-SOURCE_RP = ("RP Female Base_Heeled Foot.fbx", "Body")
+# The Tech Set was authored for ZinPia (its rig shares ZinPia's bone naming),
+# so ZinPia is its Source Base for the standoff measurement (RESTART_SCOPE.md).
+SOURCE_ZIN = ("ZinPia_Fit Base HEELED Foot High Poly.fbx", "ZIN_FIT BASE")
 TECH_SET = "FBX-Tech Set by Vinuzhka.fbx"
 
 
@@ -61,21 +63,19 @@ def _clear():
         bpy.data.objects.remove(o, do_unlink=True)
 
 
-def _fit(garment_objs, src_body, base_body, base_rig, color):
-    """Bind + place + conform every mesh in ``garment_objs`` onto the base."""
+def _conform(garment_objs, src_body, base_body, base_rig, color):
+    """Place + conform every mesh in ``garment_objs`` onto the base via the
+    rebuilt Direction-B operator (``sculpttool.conform``). ``src_body`` is the
+    garment's Source Base for authored-standoff (or ``None`` to use the
+    source-free fallback)."""
     for gm in [o for o in garment_objs if o.type == 'MESH']:
         s = gm.sculpt_tool
         s.source_body = src_body
         s.target_body = base_body
-        s.bind_mode_override = 'MODE_B'
         s.target_base_armature = base_rig
-        s.use_collision_resolution = True
-        s.smoothing_iterations = R.SMOOTHING_ITERATIONS
-        s.skip_alignment_check = True
         bpy.context.view_layer.objects.active = gm
         gm.select_set(True)
-        bpy.ops.sculpttool.bind_garment()
-        bpy.ops.sculpttool.fit_garment()
+        bpy.ops.sculpttool.conform()
         gm.color = color
 
 
@@ -136,7 +136,7 @@ def render_views(garment_meshes, base_key):
     camera angles (front / three-quarter / side / back)."""
     _clear()
     base_fbx, base_obj = BASES[base_key]
-    src = R.import_group(BODY / SOURCE_RP[0], {SOURCE_RP[1]})
+    src = R.import_group(BODY / SOURCE_ZIN[0], {SOURCE_ZIN[1]})
     src_body = next(o for o in src if o.type == 'MESH')
     base = R.import_group(BODY / base_fbx, {base_obj})
     base_body = next(o for o in base if o.type == 'MESH')
@@ -145,7 +145,7 @@ def render_views(garment_meshes, base_key):
     gobjs = []
     for i, mesh_name in enumerate(garment_meshes):
         piece = R.import_group(CLOTHING / TECH_SET, {mesh_name})
-        _fit(piece, src_body, base_body, base_rig, CLOTH[i % len(CLOTH)])
+        _conform(piece, src_body, base_body, base_rig, CLOTH[i % len(CLOTH)])
         gobjs.extend(piece)
     for o in src:
         bpy.data.objects.remove(o, do_unlink=True)
@@ -178,21 +178,18 @@ COMBO_ENTRIES = [
 
 
 def render_combos():
-    """A row of assorted garment x base pairings, each via the full fit."""
+    """A row of assorted garment x base pairings. These garments are NOT the
+    Tech Set and their original source bases aren't in the corpus, so they
+    exercise the source-free standoff fallback (``src_body=None``)."""
     _clear()
-    src_fbx, src_obj = SOURCE_RP
     meshes = []
     for i, (gf, mesh_names, base_key, label) in enumerate(COMBO_ENTRIES):
-        src = R.import_group(BODY / src_fbx, {src_obj})
-        src_body = next(o for o in src if o.type == 'MESH')
         base_fbx, base_obj = BASES[base_key]
         base = R.import_group(BODY / base_fbx, {base_obj})
         base_body = next(o for o in base if o.type == 'MESH')
         base_rig = rig.deforming_armature(base_body)
         garment = R.import_group(CLOTHING / gf, mesh_names)
-        _fit(garment, src_body, base_body, base_rig, CLOTH[i % len(CLOTH)])
-        for o in src:
-            bpy.data.objects.remove(o, do_unlink=True)
+        _conform(garment, None, base_body, base_rig, CLOTH[i % len(CLOTH)])
         R.offset_group(base + garment, (i * 1.5, 0, 0))
         base_body.color = SKIN
         meshes += [base_body] + [o for o in garment if o.type == 'MESH']
