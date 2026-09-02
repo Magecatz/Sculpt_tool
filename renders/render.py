@@ -8,6 +8,10 @@ and renders a solid Workbench image. Two modes:
     # multi-view of one outfit (default: full Tech Set -> Egirl)
     blender --background --factory-startup --python renders/render.py -- views
 
+    # PLACEMENT ONLY -- position + scale + pose via the armature, no surface
+    # conform (bind/collision/smoothing). Same args as ``views``.
+    blender --background --factory-startup --python renders/render.py -- place
+
     # grid of assorted garment x base pairings
     blender --background --factory-startup --python renders/render.py -- combos
 
@@ -31,6 +35,7 @@ import bpy
 sys.path.insert(0, str(R.REPO_ROOT))
 import sculpt_tool  # noqa: E402
 from sculpt_tool.core import rig  # noqa: E402
+from sculpt_tool.operators import op_bases, op_pose  # noqa: E402
 
 if not hasattr(bpy.types.Object, "sculpt_tool"):
     sculpt_tool.register()
@@ -72,6 +77,58 @@ def _fit(garment_objs, src_body, base_body, base_rig, color):
         bpy.ops.sculpttool.bind_garment()
         bpy.ops.sculpttool.fit_garment()
         gm.color = color
+
+
+def _place(garment_objs, base_rig, color):
+    """PLACEMENT ONLY -- position + rotation(pose) + length-scale each mesh in
+    ``garment_objs`` onto ``base_rig`` via the garment's own armature, and
+    leave the Armature modifier live so the placement deforms the mesh at
+    render time. No bind, no conform, no collision, no smoothing -- this is
+    the R7 placement stage on its own (``op_pose.place_garment_onto_rig``),
+    the "positioning, scaling, posing" the tool is trusted to get right."""
+    for gm in [o for o in garment_objs if o.type == 'MESH']:
+        s = gm.sculpt_tool
+        s.target_base_armature = base_rig
+        garment_arm = op_bases.garment_rig(gm, s)
+        gm.color = color
+        if garment_arm is None:
+            print(f"  [place] {gm.name!r}: no garment rig found -- left unplaced")
+            continue
+        placed = op_pose.place_garment_onto_rig(bpy.context, garment_arm, base_rig, [])
+        print(f"  [place] {gm.name!r}: {placed} bones (position + rotation + scale)")
+
+
+def render_place_views(garment_meshes, base_key):
+    """One outfit from ``FBX-Tech Set`` PLACED onto one base (armature
+    position + scale + pose only -- no surface conform), rendered from four
+    camera angles. The placement-only counterpart of :func:`render_views`,
+    for judging whether the placement stage alone lands the garment."""
+    _clear()
+    base_fbx, base_obj = BASES[base_key]
+    base = R.import_group(BODY / base_fbx, {base_obj})
+    base_body = next(o for o in base if o.type == 'MESH')
+    base_rig = rig.deforming_armature(base_body)
+
+    gobjs = []
+    for i, mesh_name in enumerate(garment_meshes):
+        piece = R.import_group(CLOTHING / TECH_SET, {mesh_name})
+        _place(piece, base_rig, CLOTH[i % len(CLOTH)])
+        gobjs.extend(piece)
+    base_body.color = SKIN
+    meshes = [base_body] + [o for o in gobjs if o.type == 'MESH']
+
+    R.setup_workbench(resolution=(1000, 1300))
+    for az, name in [(0, "front"), (40, "three-quarter"), (90, "side"), (180, "back")]:
+        for o in list(bpy.data.objects):
+            if o.type in {'FONT', 'CAMERA'}:
+                bpy.data.objects.remove(o, do_unlink=True)
+        _, _, mn, _ = R._scene_bounds(meshes)
+        center, _, _, _ = R._scene_bounds(meshes)
+        R.add_label(f"Tech Set -> {base_key}  (placed: pos+scale+pose, {name})",
+                    (center.x, mn.y - 0.3, mn.z - 0.12),
+                    size=0.06, color=(0.95, 0.95, 0.98), face_deg=az)
+        R.frame_camera(meshes, azimuth_deg=az, elevation_deg=6, zoom=0.95)
+        R.render_to(R.OUT_DIR / f"place_{name}.png")
 
 
 def render_views(garment_meshes, base_key):
@@ -161,7 +218,10 @@ def main():
         garment_meshes = (argv[1].split(",") if len(argv) > 1
                           else ["Sweater by Vinuzhka", "pants by Vinuzhka"])
         base_key = argv[2] if len(argv) > 2 else "Egirl"
-        render_views(garment_meshes, base_key)
+        if mode == "place":
+            render_place_views(garment_meshes, base_key)
+        else:
+            render_views(garment_meshes, base_key)
 
 
 if __name__ == "__main__":
