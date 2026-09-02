@@ -97,78 +97,114 @@ Confirms the spine is sound and independent of the broken part.
 **Full-pipeline render** — pants improve, but `Top`/`pasties` are destroyed.
 Confirms the conform stage does unrecoverable damage to fitted pieces.
 
-**Body-morph experiment** (`renders/morph_experiment.py`, ZinPia → Egirl, no
-garment) — reconstructing the source body onto the target skeleton through
-the bone map mapped 21,981/22,033 verts and produced a **smooth, coherent
-girth field** over torso/hips/legs. This validates that a **source-anchored**
-deformation field is well-behaved — the opposite of the old target-anchored
-scatter. Caveat: the experiment's *crude independent-per-bone* transfer
-drooped the arms (rest-pose / bone-roll mismatch); the production placement
-operator already handles this via chained rigid+scale, so the field must be
-computed **in the placed frame**, not by independent per-bone transfer.
+**Body-morph experiment** (`renders/morph_experiment.py`, ZinPia → {Egirl,
+Venus}, no garment) — reconstructing the source body onto the target skeleton
+through the bone map mapped ~22,000/22,033 verts and produced a **smooth,
+coherent girth field** over torso/hips/legs, **and it held cross-creator**
+(ZinPia → Venus, a different author's 98-bone rig, still 51 paired primary
+bones). Caveat: the crude independent-per-bone transfer drooped/splayed the
+arms (rest-pose / bone-roll mismatch) — the field is unreliable near the
+shoulders unless computed in the placed frame with roll normalization.
 
-## 5. Direction decision — C engine, A/B anchors
+**A-vs-B conform experiment** (`renders/ab_conform_experiment.py`, ZinPia →
+Venus, on `Top` and `pants`) — the decisive one. A minimal **Direction B**
+(place → single nearest-target-surface projection → reapply authored standoff,
+**no collision, no smoothing**) produced a clean, girth-correct, shape-
+preserving fit on **both** pieces, including the `Top` the old pipeline
+destroyed. **Direction A** (source-anchored transfer) also resolved girth but
+dragged shoulder/arm "wings" from the crude field and was noisier. Conclusion:
+the old inflation came from the **collision + smoothing loop**, not from
+target-anchoring; B-minimal is the primary conform (see section 5).
 
-A **combination**, with graceful degradation when the source base is absent:
+## 5. Direction decision — B-minimal primary (revised)
 
-- **Engine — Direction C (elastic / ARAP grab-propagation).** Always
-  available. Move a sparse set of anchor correspondences to the target and
-  propagate through the mesh with as-rigid-as-possible / elastic falloff, so
-  the rest of the surface follows smoothly and local shape is preserved.
-  Needs only the garment mesh + target body. This is the always-on
-  mechanism and matches the designer's grab-brush mental model.
+> **Revised after the A-vs-B experiment** (`renders/ab_conform_experiment.py`,
+> ZinPia → Venus, cross-creator, on the two stress pieces `Top` and `pants`).
+> The earlier draft made Direction A the quality provider with B as fallback.
+> The renders inverted that; the decision below is what we build.
 
-- **Anchors — best available source:**
-  - **Source base present** (Tech Set and most corpus) → **Direction A**
-    supplies high-quality anchors from the smooth source→target field,
-    computed in the placed frame. Best quality.
-  - **Source base absent** → fall back to target-contact anchors (tight
-    regions detected from the *placed* garment's proximity) plus **Direction
-    B** weight-attribution to keep anchors regionally coherent.
+**Primary conform = Direction B, minimal.** Per garment vertex:
 
-- **Collision** — final thin clip only. Cannot shape, cannot inflate.
+1. **Place** the garment on the target via the armature (position + rotation
+   + scale) — the existing placement spine.
+2. **Project** each placed vertex onto the nearest target-body surface point.
+3. **Reapply the authored standoff** — the signed distance the vertex was
+   authored to sit off its own body — along the target surface normal, so
+   tight pieces stay tight and loose pieces stay loose.
 
-- **Placement spine** — unchanged.
+Nothing else. **No collision push-out, no smoothing loop.** That is the whole
+mechanism, and on both stress pieces it produces a clean, girth-correct,
+shape-preserving fit on the cross-creator target — including the `Top` that
+the old pipeline inflated into a blob.
 
-Rationale: the same engine handles both the source-present and source-absent
-cases; quality degrades instead of failing. This contains the "original base
-isn't always available" risk, which is the main weakness of a pure Direction
-A approach.
+**Key finding — the actual culprit.** The old pipeline's unrecoverable
+inflation was NOT caused by target-anchored correspondence. It was caused by
+the **collision-resolution push-out + smoothing relaxation loop** layered on
+top of it. Removing those and doing a single clean projection fixes the
+failure. So:
 
-## 6. Phased rebuild plan
+- **Collision / elastic (C) are OPTIONAL polish, off by default.** They return
+  only for a specific demonstrated case (deep interpenetration a single
+  projection leaves, or residual surface noise), always gated behind the
+  "loses authored identity" acceptance test. They are the thing that broke it
+  last time; they are guilty until proven necessary per-case.
+- **Direction A is demoted to a secondary tool** for cases where the
+  target-nearest correspondence is genuinely ambiguous (layered/overlapping
+  garments, deep concavities) — and only where the source base exists AND the
+  source→target field is cleaned up (arm-roll normalization; A currently drags
+  "wings" from the crude reconstruction near the shoulders). Its theoretical
+  stability advantage did not beat a clean target projection on real pieces.
+
+**Standoff and the source base — honest nuance.** The standoff in step 3 was
+measured from the **source base** (ZinPia) in the experiment, so B as tested
+is not fully source-independent. Because armature placement preserves the
+garment's body-relative offset, the standoff can instead be measured from the
+**placed** garment against the target at placement time — source-free. That
+source-free variant is validated in P2 below; source-measured standoff is the
+high-quality path when the source base is available.
+
+**Placement spine** — unchanged.
+
+## 6. Phased rebuild plan (revised to B-minimal)
 
 - **P0 — Harness truth.** Fix the source base in the render harness (ZinPia
-  for Tech Set). Add a `conform` render mode next to `place`, so every step
-  is judged on the full five-piece outfit with the small pieces watched.
-- **P1 — Elastic engine (C), anchor-agnostic.** Build the ARAP/elastic
-  propagation core in `core/` (pure logic, testable): given a mesh + a set of
-  (vertex → target position) anchors + pin weights, produce a
-  shape-preserving deformation. Prove it on synthetic anchors first.
-- **P2 — Direction A anchor provider.** Compute the source→target field in
-  the placed frame (reuse placement machinery; add bone-roll normalization).
-  Feed it as anchors to P1. Validate on Tech Set → {Egirl, Fantasy, Venus}.
-- **P3 — Source-absent fallback (B).** Target-contact + weight-attributed
-  anchors for garments with no source base. Validate on a corpus piece whose
-  source base we deliberately withhold.
-- **P4 — Collision clip + boundary polish**, demoted to final safety only.
-- **P5 — Wire operators.** Rewrite `op_fit` / `_fit_common` conform call;
-  reconceive `op_bind` as source-correspondence recording; update Batch.
+  for Tech Set). *(The `place` and `ab_conform` render modes already exist and
+  judge on the real corpus.)*
+- **P1 — Core B conform (pure logic).** `core/conform.py`, testable outside
+  Blender: `authored_standoff(rest_positions, source_ctx)` and
+  `project_to_target(placed_positions, standoff, target_ctx)` →
+  fitted world positions. Single projection, no collision/smoothing. Unit
+  tests on synthetic tubes/grids (girth up/down, tight vs loose standoff).
+- **P2 — Operator + source-free standoff.** New `op_conform` (place via the
+  spine → `core.conform` → bake Shape Key), wired into `ui_panel`. Validate
+  the **source-free** standoff variant (measured from the placed garment)
+  against the source-measured one on Tech Set → {Egirl, Venus}; keep whichever
+  holds, or keep both with source as the quality path.
+- **P3 — Full-outfit acceptance.** Run the whole five-piece Tech Set → Venus
+  and {Egirl, Fantasy} through `op_conform`; every piece must keep its
+  authored identity (the `Top`-balloon gate). Add a `conform` render mode.
+- **P4 — Optional polish, off by default.** Re-introduce collision clip /
+  light elastic ONLY for a specific piece that P3 shows a single projection
+  can't handle, each behind the acceptance gate.
+- **P5 — Batch + cleanup.** Re-add a Batch path over `op_conform`; prune
+  now-dead settings/props and the stale pipeline prose in kept docstrings.
 
 ## 7. Open questions / tests
 
-- **Weight-map-across assumption.** Does the garment's existing weight
-  painting map acceptably onto the target base via the bone map? The
-  placement renders suggest yes for gross deformation; needs explicit
-  per-region validation before P2 leans on it.
-- **Bone-roll normalization.** Required to compute the field in the placed
-  frame without the arm-droop artifact seen in the experiment.
-- **ARAP performance.** Largest pieces are ~18k verts (pants); confirm the
-  elastic solve is interactive-ish or acceptable for a bake.
-- **Anchor selection heuristic.** How sparse can anchors be before shape
-  drifts? Where do we place them (tight-contact detection vs. uniform
-  sampling vs. source-field-driven)?
-- **Mix tuning.** When both source-field and contact anchors exist, how do we
-  blend them? (Another thing to test, per the design discussion.)
+- **Source-free standoff (P2).** Does standoff measured from the *placed*
+  garment against the target match the source-measured standoff closely
+  enough to drop the source-base dependency for tight/loose authoring?
+- **Open-edge rims under a single projection.** Necklines/hems/cuffs are the
+  places a bare projection is most likely to leave a ragged rim (no smoothing
+  to relax it). Watch these specifically in P3; a boundary-only relax may be
+  the one piece of "polish" that earns its way back in first.
+- **Deep interpenetration / concavities.** Where a single nearest-surface
+  projection maps two garment layers to the same body point (armpits, crotch,
+  overlapping straps) — does B alone hold, or is this the case that needs
+  optional collision/elastic polish (P4)?
+- **A field cleanup (only if A is needed).** Arm-roll normalization + placed-
+  frame computation to remove the shoulder "wings", should a secondary
+  A path be required for ambiguous-correspondence garments.
 
 ## 8. Validation harness
 
