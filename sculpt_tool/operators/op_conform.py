@@ -124,14 +124,13 @@ class SCULPTTOOL_OT_conform(bpy.types.Operator):
         else:
             standoff = conform.placed_standoff(placed_world, target_ctx)
 
-        # Stage 3: project (with spatial-coherence weight smoothing over the
-        # garment's own edge adjacency, so the tight/loose boundary is gradual).
-        neighbors = conform.build_vertex_neighbors(
-            [(e.vertices[0], e.vertices[1]) for e in mesh.edges], vertex_count
-        )
+        # Stage 3: project every vertex onto the target surface (keep_loose
+        # off). The loose-vertex ramp was found to STRETCH limb-wrapping
+        # sleeves into scattered wings (a sleeve is a loose tube but must still
+        # be girth-projected onto the arm); pure projection wraps them cleanly.
         try:
             fitted_world = conform.project_to_target(
-                placed_world, standoff, target_ctx, neighbors=neighbors
+                placed_world, standoff, target_ctx, keep_loose=False
             )
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))

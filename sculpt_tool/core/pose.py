@@ -108,28 +108,30 @@ def compute_bone_placements(garment_arm, target_arm, bone_pairs):
       separately via ``pose_bone.scale.y``. Girth (X/Z) is left at rest; the
       surface fit refines thickness (card R8).
 
-    **Rotation (the R7-regression fix).** An earlier version slammed the
-    target bone's *absolute* world orientation onto the garment bone. That
-    is only correct when the two rigs share bone rest orientations; where
-    they don't -- differing bone roll / rest-frame conventions across rig
-    families, and especially helper bones (breast/thumb/toe) whose rest
-    axes differ wildly -- it injected a large spurious rotation into the
-    skinned region *even at rest* (measured Tech Set -> Egirl: ``Boob``
-    142.9deg, ``Thumb`` 40-55deg), folding the chest/cuffs inside-out. The
-    correct orientation carries only the target's pose *delta* (its current
-    world rotation relative to its own rest) onto the garment bone's own
-    rest orientation:
+    **Rotation (aim along the target's direction).** Each garment bone is
+    aimed so its length axis points along the TARGET bone's actual world
+    direction (head->tail), via the **minimal-arc swing** from the garment
+    bone's own rest direction:
 
-        pose_delta = R_target_now . R_target_rest^-1
-        world_rot  = pose_delta . R_garment_rest
+        garment_dir = (garment rest tail - head), world, normalized
+        target_dir  = (target posed tail - head), world, normalized
+        swing       = rotation taking garment_dir -> target_dir (minimal arc)
+        world_rot   = swing . R_garment_rest
 
-    When the target base is at rest (``R_target_now == R_target_rest``),
-    ``pose_delta`` is identity and ``world_rot`` is exactly the garment
-    bone's own rest orientation -- so a rest-pose retarget now *repositions
-    and resizes* each bone without twisting its skinned surface, which is
-    what a co-posed pair should do. This is the same rest-orientation
-    compensation :func:`compute_pose_rotations` already applied for the
-    rotation-only transfer, expressed here in world space.
+    This points each limb the way the target's limb points -- so a garment
+    authored in one **rest pose** (e.g. a T-pose, arms out) correctly follows
+    a target base in a DIFFERENT rest pose (e.g. an A-pose, arms down), the
+    case the earlier "pose-delta only" form silently failed: it transferred
+    only the target's rotation *relative to the target's own rest*, so an
+    A-pose target at rest left the garment's arms in the garment's T-pose.
+
+    Crucially the swing copies only the target's *direction*, never its
+    roll/axis convention, so it does NOT reintroduce the regression where
+    slamming the target's absolute orientation twisted the skinned region
+    (measured Tech Set -> Egirl: ``Boob`` 142.9deg, ``Thumb`` 40-55deg).
+    When the two bones already point the same way (a co-posed pair), the
+    swing is identity and the garment bone keeps its own rest orientation --
+    so that happy path is unchanged, now for the right reason.
 
     Keeping rotation and scale separate avoids a non-orthonormal matrix that
     Blender's decomposition would mangle into the wrong axis. Pure reads; no
@@ -155,22 +157,30 @@ def compute_bone_placements(garment_arm, target_arm, bone_pairs):
         if target_length < 1e-9:
             continue
 
-        # Carry only the target's pose DELTA onto the garment bone's own
-        # rest orientation, so a rest-pose target injects no twist (see the
-        # "Rotation" note above). All three are world-space rotations.
-        target_rest_rot = (target_world @ target_bone.matrix_local).to_quaternion()
-        target_now_rot = (target_world @ target_pose_bone.matrix).to_quaternion()
-        pose_delta = target_now_rot @ target_rest_rot.inverted()
+        rest_head = garment_world @ garment_bone.head_local
+        rest_tail = garment_world @ garment_bone.tail_local
+        rest_length = (rest_tail - rest_head).length
+        if rest_length < 1e-9:
+            continue
+
+        # Aim the garment bone along the TARGET bone's actual world direction
+        # (head->tail) via the minimal-arc SWING from the garment bone's own
+        # rest direction (see the "Rotation" note above). This points each limb
+        # the way the target's limb points -- so a garment authored in one rest
+        # pose (T-pose) follows a target base in a DIFFERENT rest pose (A-pose)
+        # -- while copying none of the target's roll/axis convention, so the
+        # skinned cross-section isn't spun. Co-posed bones (garment_dir ==
+        # target_dir) get an identity swing and keep their rest orientation.
         garment_rest_rot = (garment_world @ garment_bone.matrix_local).to_quaternion()
-        rotation = (pose_delta @ garment_rest_rot).normalized()
+        garment_dir = (rest_tail - rest_head).normalized()
+        target_dir = (tail - head).normalized()
+        swing = garment_dir.rotation_difference(target_dir)
+        rotation = (swing @ garment_rest_rot).normalized()
 
         world_rigid = rotation.to_matrix().to_4x4()
         world_rigid.translation = head
 
-        rest_head = garment_world @ garment_bone.head_local
-        rest_tail = garment_world @ garment_bone.tail_local
-        rest_length = (rest_tail - rest_head).length
-        length_scale = target_length / rest_length if rest_length > 1e-9 else 1.0
+        length_scale = target_length / rest_length
 
         placements.append((garment_bone.name, world_rigid, length_scale))
     return placements
