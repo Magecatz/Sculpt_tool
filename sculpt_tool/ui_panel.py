@@ -141,6 +141,9 @@ class SCULPTTOOL_PT_main(bpy.types.Panel):
                     text="No Source Base: standoff approximated.", icon='INFO',
                 )
         conform_box.operator("sculpttool.conform", icon='MOD_SHRINKWRAP')
+        # Batch: conform every selected garment onto its own Target Body (a
+        # whole outfit at once). Uses each garment's own settings.
+        conform_box.operator("sculpttool.batch_conform", icon='RENDERLAYERS')
 
         pins_box = layout.box()
         pins_box.label(text="Pin Regions", icon='GROUP_VERTEX')

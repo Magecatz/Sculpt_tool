@@ -10,7 +10,8 @@ stage rebuilt (see RESTART_SCOPE.md). Current operators:
 - ``op_pose.py`` -- OT_pose_to_target, the placement stage (position +
   rotation + scale via the canonical bone map).
 - ``op_conform.py`` -- OT_conform, the rebuilt Direction-B conform (place ->
-  standoff -> project -> bake).
+  standoff -> project -> bake), plus OT_batch_conform (the same ``run_conform``
+  over every selected garment -- an outfit in one pass).
 - ``op_pin_groups.py`` -- ``Pin_*`` vertex-group helpers (add/remove/assign/
   select), retained as anchor authoring for optional elastic polish.
 """

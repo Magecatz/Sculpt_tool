@@ -46,6 +46,8 @@ class RegistrationSmokeTest(unittest.TestCase):
             self.assertTrue(hasattr(bpy.types, "SCULPTTOOL_OT_pose_to_target"))
             self.assertTrue(hasattr(bpy.types, "SCULPTTOOL_OT_detect_rigs"))
             self.assertTrue(hasattr(bpy.types, "SCULPTTOOL_OT_compute_bone_map"))
+            self.assertTrue(hasattr(bpy.types, "SCULPTTOOL_OT_conform"))
+            self.assertTrue(hasattr(bpy.types, "SCULPTTOOL_OT_batch_conform"))
 
             obj = common.make_grid("Probe", x_segments=1, y_segments=1)
             self.assertTrue(hasattr(obj, "sculpt_tool"))
