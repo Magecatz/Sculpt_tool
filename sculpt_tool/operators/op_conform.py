@@ -124,9 +124,16 @@ class SCULPTTOOL_OT_conform(bpy.types.Operator):
         else:
             standoff = conform.placed_standoff(placed_world, target_ctx)
 
-        # Stage 3: project every placed vertex onto the target surface.
+        # Stage 3: project onto the target surface, with the loose-vertex ramp
+        # (flared/draped geometry keeps its placed shape instead of scattering)
+        # made spatially coherent over the garment's own edge adjacency.
+        neighbors = conform.build_vertex_neighbors(
+            [(e.vertices[0], e.vertices[1]) for e in mesh.edges], vertex_count
+        )
         try:
-            fitted_world = conform.project_to_target(placed_world, standoff, target_ctx)
+            fitted_world = conform.project_to_target(
+                placed_world, standoff, target_ctx, neighbors=neighbors
+            )
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
