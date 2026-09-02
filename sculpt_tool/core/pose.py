@@ -180,7 +180,34 @@ def compute_bone_placements(garment_arm, target_arm, bone_pairs):
         world_rigid = rotation.to_matrix().to_4x4()
         world_rigid.translation = head
 
-        length_scale = target_length / rest_length
+        # Scale each garment bone to the target's joint-to-joint SPAN -- the
+        # distance from this bone's head to the head of its aligned mapped
+        # child (the next joint down the chain) -- not the target bone's own
+        # length. A target rig whose primary bones stop short of the next joint
+        # (the remaining segment carried by twist/helper bones) would otherwise
+        # shrink the garment segment to the stub: measured on Venus, the
+        # Lower_Arm bone is 0.099 but the forearm span is 0.198, halving the
+        # sleeve. ``max`` keeps the plain bone length wherever the target bone
+        # already spans its segment (Egirl/Fantasy), so the span only ever
+        # LENGTHENS a stub and never changes a base that was already correct.
+        axis = (rest_tail - rest_head).normalized()
+        target_span = 0.0
+        best_align = 0.0  # only children that continue the bone (align > 0)
+        for child in garment_bone.children:
+            child_target_name = pairs.get(child.name)
+            if child_target_name is None:
+                continue
+            child_target = target_arm.pose.bones.get(child_target_name)
+            if child_target is None:
+                continue
+            child_vec = (garment_world @ child.head_local) - rest_head
+            if child_vec.length <= 1e-9:
+                continue
+            align = child_vec.normalized().dot(axis)
+            if align > best_align:
+                best_align = align
+                target_span = ((target_world @ child_target.head) - head).length
+        length_scale = max(target_length, target_span) / rest_length
 
         placements.append((garment_bone.name, world_rigid, length_scale))
     return placements

@@ -63,6 +63,28 @@ class ComputePlacementTest(unittest.TestCase):
         self.assertAlmostEqual(world_rigid.to_translation().x, 0.2, places=4)
         self.assertAlmostEqual(length_scale, 1.0, places=4)
 
+    def test_stub_target_bone_scales_to_joint_span(self):
+        # The twist-bone case (measured on Venus): the target's upper-arm bone
+        # is a STUB (length 0.3) whose next joint is farther out (its mapped
+        # child's head at 0.6 -> a 0.6 segment span). The garment upper arm
+        # (span 0.5) must scale to that SPAN (0.6/0.5 = 1.2), not the stub bone
+        # length (0.3/0.5 = 0.6, which would halve the sleeve).
+        garment = common.make_armature("GRig", [
+            ("Hips", (0.0, 0.0, 1.0), (0.0, 0.0, 1.2), None),
+            ("Arm.L", (0.0, 0.0, 1.0), (0.5, 0.0, 1.0), "Hips"),      # upper, len 0.5
+            ("Elbow.L", (0.5, 0.0, 1.0), (1.0, 0.0, 1.0), "Arm.L"),  # fore, head at 0.5
+        ])
+        target = common.make_armature("TRig", [
+            ("Hips", (0.0, 0.0, 1.0), (0.0, 0.0, 1.2), None),
+            ("Arm_L", (0.0, 0.0, 1.0), (0.3, 0.0, 1.0), "Hips"),      # STUB upper, len 0.3
+            ("Elbow_L", (0.6, 0.0, 1.0), (1.1, 0.0, 1.0), "Arm_L"),  # fore head at 0.6
+        ])
+        pairs = [("Hips", "Hips"), ("Arm.L", "Arm_L"), ("Elbow.L", "Elbow_L")]
+        placements = {n: (m, s) for n, m, s in
+                      pose.compute_bone_placements(garment, target, pairs)}
+        _, length_scale = placements["Arm.L"]
+        self.assertAlmostEqual(length_scale, 1.2, places=3)
+
 
 class PlaceOperatorTest(unittest.TestCase):
     def setUp(self):
