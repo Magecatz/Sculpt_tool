@@ -124,9 +124,15 @@ class SCULPTTOOL_OT_conform(bpy.types.Operator):
         else:
             standoff = conform.placed_standoff(placed_world, target_ctx)
 
-        # Stage 3: project.
+        # Stage 3: project (with spatial-coherence weight smoothing over the
+        # garment's own edge adjacency, so the tight/loose boundary is gradual).
+        neighbors = conform.build_vertex_neighbors(
+            [(e.vertices[0], e.vertices[1]) for e in mesh.edges], vertex_count
+        )
         try:
-            fitted_world = conform.project_to_target(placed_world, standoff, target_ctx)
+            fitted_world = conform.project_to_target(
+                placed_world, standoff, target_ctx, neighbors=neighbors
+            )
         except ValueError as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}

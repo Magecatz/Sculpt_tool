@@ -144,6 +144,30 @@ class ConformTubeTest(unittest.TestCase):
         fitted = conform.project_to_target(placed, standoff, self._ctx(target))
         self.assertAlmostEqual(_mean(_radii(fitted)), 2.0, delta=0.05)
 
+    def test_build_vertex_neighbors(self):
+        neighbors = conform.build_vertex_neighbors([(0, 1), (1, 2), (2, 2)], 3)
+        self.assertEqual([sorted(n) for n in neighbors], [[1], [0, 2], [1]])
+
+    def test_spatial_coherence_reduces_tearing(self):
+        # A sharp standoff split (top half loose, bottom half tight) makes the
+        # raw per-vertex ramp jump hard at the boundary ring; smoothing the
+        # weight over the mesh adjacency must reduce the worst adjacent gap.
+        target = common.make_tube("Target", radius=2.0, height=4.0)
+        garment = common.make_tube("Placed", radius=3.0, height=2.0)
+        positions = common.world_positions(garment)
+        standoff = [0.6 if p[2] > 0.0 else 0.0 for p in positions]
+        edges = [(e.vertices[0], e.vertices[1]) for e in garment.data.edges]
+        neighbors = conform.build_vertex_neighbors(edges, len(positions))
+        ctx = self._ctx(target)
+
+        raw = conform.project_to_target(positions, standoff, ctx)  # neighbors=None
+        smoothed = conform.project_to_target(positions, standoff, ctx, neighbors=neighbors)
+
+        def worst_gap(fitted):
+            return max((fitted[a] - fitted[b]).length for a, b in edges)
+
+        self.assertLess(worst_gap(smoothed), worst_gap(raw))
+
     def test_length_mismatch_raises(self):
         target = common.make_tube("Target", radius=2.0, height=4.0)
         garment = common.make_tube("Garment", radius=1.2, height=2.0)

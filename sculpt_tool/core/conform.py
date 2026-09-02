@@ -41,6 +41,42 @@ from mathutils import Vector
 _LOOSE_NEAR_FRAC = 0.012
 _LOOSE_FAR_FRAC = 0.06
 
+# Spatial-coherence smoothing of the project/keep-placed weight field (see
+# project_to_target). A purely per-vertex ramp tears an open garment where
+# adjacent vertices straddle the near/far band (one projects to the body, its
+# neighbour keeps its placed spot). Diffusing the weight across the mesh
+# adjacency this many Laplacian passes turns that hard split into a gradual
+# band a few rings wide, so the surface deforms smoothly instead of ripping.
+_WEIGHT_SMOOTH_ITERATIONS = 15
+
+
+def build_vertex_neighbors(edge_pairs, vertex_count):
+    """Adjacency list (one list of neighbour vertex indices per vertex) from
+    ``edge_pairs`` -- ``(v0, v1)`` index tuples, e.g. a mesh's edges. Pure
+    data, so :func:`project_to_target`'s weight smoothing stays testable
+    outside Blender; the operator builds ``edge_pairs`` from the garment mesh.
+    """
+    neighbors = [[] for _ in range(vertex_count)]
+    for a, b in edge_pairs:
+        if a == b:
+            continue
+        neighbors[a].append(b)
+        neighbors[b].append(a)
+    return neighbors
+
+
+def _smooth_weights(weights, neighbors, iterations):
+    """Laplacian-diffuse a per-vertex scalar ``weights`` field over
+    ``neighbors`` for ``iterations`` passes (each vertex -> mean of its
+    neighbours), so the project/keep-placed boundary is gradual, not a step."""
+    for _ in range(iterations):
+        updated = weights[:]
+        for i, adjacent in enumerate(neighbors):
+            if adjacent:
+                updated[i] = sum(weights[j] for j in adjacent) / len(adjacent)
+        weights = updated
+    return weights
+
 
 def _bbox_diagonal(positions):
     """Bounding-box diagonal length of a set of positions, or 0.0 if empty."""
@@ -100,7 +136,8 @@ def placed_standoff(placed_positions, target_ctx):
     return standoff
 
 
-def project_to_target(placed_positions, standoff, target_ctx, keep_loose=True):
+def project_to_target(placed_positions, standoff, target_ctx, keep_loose=True,
+                      neighbors=None, weight_smooth_iterations=_WEIGHT_SMOOTH_ITERATIONS):
     """Conform armature-PLACED garment vertices to the target body (Direction
     B, minimal).
 
@@ -122,6 +159,14 @@ def project_to_target(placed_positions, standoff, target_ctx, keep_loose=True):
     a loose open jacket conform correctly in the same pass. Pass
     ``keep_loose=False`` for the pure projection (every vertex projected).
 
+    ``neighbors`` (from :func:`build_vertex_neighbors`), when given, adds
+    **spatial coherence**: the per-vertex project/keep-placed weight is
+    Laplacian-diffused over the mesh ``weight_smooth_iterations`` passes before
+    the blend, so the tight->loose transition is a gradual band rather than a
+    per-vertex step -- this is what removes the ragged tearing an open jacket's
+    mixed-standoff geometry otherwise leaves along the ramp boundary. Without
+    ``neighbors`` the raw per-vertex ramp is used (no smoothing).
+
     ``placed_positions`` are world-space garment vertices after armature
     placement; ``standoff`` is :func:`authored_standoff`'s output (or
     :func:`placed_standoff`'s, or any per-vertex signed standoff); ``target_ctx``
@@ -141,31 +186,35 @@ def project_to_target(placed_positions, standoff, target_ctx, keep_loose=True):
         )
     bvh = target_ctx.bvh
 
-    near = far = span = 0.0
-    if keep_loose:
-        diagonal = _bbox_diagonal(target_ctx.positions)
-        near = _LOOSE_NEAR_FRAC * diagonal
-        far = _LOOSE_FAR_FRAC * diagonal
-        span = max(far - near, 1e-9)
-
-    fitted = []
-    for position, offset in zip(placed_positions, standoff):
-        placed = Vector(position)
+    # Nearest-surface projection for every vertex (a miss keeps the placed
+    # position, i.e. projected == placed so any blend weight is a no-op there).
+    placed_vecs = [Vector(p) for p in placed_positions]
+    projected = []
+    for placed, offset in zip(placed_vecs, standoff):
         location, normal, index, _distance = bvh.find_nearest(placed)
-        if index is None:
-            fitted.append(placed)
-            continue
-        projected = location + normal * offset
-        if not keep_loose:
-            fitted.append(projected)
-            continue
-        # Ramp: 1 (fully project) when authored tight, 0 (keep placed) when loose.
+        projected.append(placed if index is None else location + normal * offset)
+
+    if not keep_loose:
+        return projected
+
+    # Per-vertex ramp weight: 1 (project) when authored tight, 0 (keep placed)
+    # when loose, smooth lerp between.
+    diagonal = _bbox_diagonal(target_ctx.positions)
+    near = _LOOSE_NEAR_FRAC * diagonal
+    far = _LOOSE_FAR_FRAC * diagonal
+    span = max(far - near, 1e-9)
+    weights = []
+    for offset in standoff:
         magnitude = abs(offset)
         if magnitude <= near:
-            weight = 1.0
+            weights.append(1.0)
         elif magnitude >= far:
-            weight = 0.0
+            weights.append(0.0)
         else:
-            weight = 1.0 - (magnitude - near) / span
-        fitted.append(placed.lerp(projected, weight))
-    return fitted
+            weights.append(1.0 - (magnitude - near) / span)
+
+    # Spatial coherence: diffuse the weight field so the boundary is gradual.
+    if neighbors is not None and weight_smooth_iterations > 0:
+        weights = _smooth_weights(weights, neighbors, weight_smooth_iterations)
+
+    return [placed.lerp(proj, w) for placed, proj, w in zip(placed_vecs, projected, weights)]
