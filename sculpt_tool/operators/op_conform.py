@@ -22,10 +22,12 @@ Setup + core + bake + report; the geometry lives in ``core.conform`` /
 ``core.geometry`` (pure logic), this operator owns the scene interaction.
 """
 
+from dataclasses import dataclass
+
 import bpy
 
 from . import op_bases, op_pose
-from ..core import conform, geometry, storage
+from ..core import conform, geometry, quality, storage
 
 SHAPE_KEY_NAME = storage.FITTED_SHAPE_KEY_NAME
 
@@ -37,11 +39,33 @@ class ConformError(Exception):
     records it as a per-garment skip and continues."""
 
 
+@dataclass
+class ConformReport:
+    """What one conform produced: the human-readable summary plus the
+    surface-quality metrics measured on the fitted result (Layer 0)."""
+    info: str
+    edge_distortion: quality.EdgeDistortion
+    looseness: object  # float | None
+
+
+def _measure_quality(rest_world, fitted_world, standoff, edge_pairs, target_ctx):
+    """Compute the two Layer-0 metrics on a fitted result. ``standoff`` is the
+    signed authored/placed standoff used by the conform; looseness is measured
+    on its magnitude vs the fitted distance to the target surface."""
+    distortion = quality.edge_distortion(rest_world, fitted_world, edge_pairs)
+    authored_abs = [abs(s) for s in standoff]
+    fitted_abs = conform.surface_standoffs(fitted_world, target_ctx)
+    diag = conform._bbox_diagonal(target_ctx.positions)
+    looseness = quality.looseness_preservation(authored_abs, fitted_abs, loose_fraction_of=diag)
+    return distortion, looseness
+
+
 def run_conform(context, garment_obj):
     """Place + conform + bake one garment onto its Target Body (the full
     Direction-B pipeline: place -> standoff -> project -> bake). Returns a
-    short info string on success. Raises :class:`ConformError` for a bad
-    setup and ``ValueError`` for a pipeline failure.
+    :class:`ConformReport` (info string + Layer-0 quality metrics) on success.
+    Raises :class:`ConformError` for a bad setup and ``ValueError`` for a
+    pipeline failure.
 
     This is the single source of the conform sequence -- both
     ``OT_conform`` (active object) and ``OT_batch_conform`` (each selected
@@ -104,9 +128,8 @@ def run_conform(context, garment_obj):
 
     # Stage 3: project onto the target surface, loose-vertex ramp made
     # spatially coherent over the garment's own edge adjacency.
-    neighbors = conform.build_vertex_neighbors(
-        [(e.vertices[0], e.vertices[1]) for e in mesh.edges], vertex_count
-    )
+    edge_pairs = [(e.vertices[0], e.vertices[1]) for e in mesh.edges]
+    neighbors = conform.build_vertex_neighbors(edge_pairs, vertex_count)
     fitted_world = conform.project_to_target(
         placed_world, standoff, target_ctx, neighbors=neighbors
     )
@@ -131,11 +154,15 @@ def run_conform(context, garment_obj):
         op_pose.set_armature_deform_visible(garment_obj, False)
         context.view_layer.update()
 
-    return (
+    info = (
         f"{vertex_count} vertices, "
         f"{'source-measured' if used_source else 'source-free'} standoff"
         f"{', placed via armature' if placed_via_armature else ''}"
     )
+    distortion, looseness = _measure_quality(
+        rest_world, fitted_world, standoff, edge_pairs, target_ctx
+    )
+    return ConformReport(info=info, edge_distortion=distortion, looseness=looseness)
 
 
 class SCULPTTOOL_OT_conform(bpy.types.Operator):
@@ -161,15 +188,18 @@ class SCULPTTOOL_OT_conform(bpy.types.Operator):
     def execute(self, context):
         garment_obj = context.object
         try:
-            info = run_conform(context, garment_obj)
+            report = run_conform(context, garment_obj)
         except (ConformError, ValueError) as exc:
             self.report({'ERROR'}, str(exc))
             return {'CANCELLED'}
         self.report(
             {'INFO'},
             f"Conformed '{garment_obj.name}' to "
-            f"'{garment_obj.sculpt_tool.target_body.name}' ({info}).",
+            f"'{garment_obj.sculpt_tool.target_body.name}' ({report.info}).",
         )
+        warning = quality.quality_warning(report.edge_distortion, report.looseness)
+        if warning:
+            self.report({'WARNING'}, f"'{garment_obj.name}' fit quality: {warning}.")
         return {'FINISHED'}
 
 
@@ -191,17 +221,21 @@ class SCULPTTOOL_OT_batch_conform(bpy.types.Operator):
     def execute(self, context):
         garments = [o for o in context.selected_objects if o.type == 'MESH'
                     and getattr(o, "sculpt_tool", None)]
-        done, skipped = 0, []
+        done, warned, skipped = 0, 0, []
         for garment_obj in garments:
             try:
-                run_conform(context, garment_obj)
+                report = run_conform(context, garment_obj)
                 done += 1
+                if quality.quality_warning(report.edge_distortion, report.looseness):
+                    warned += 1
             except (ConformError, ValueError) as exc:
                 skipped.append(f"{garment_obj.name} ({exc})")
         if done == 0 and skipped:
             self.report({'ERROR'}, "Batch Conform: nothing conformed. " + "; ".join(skipped))
             return {'CANCELLED'}
         msg = f"Batch Conform: {done} garment(s) conformed"
+        if warned:
+            msg += f" ({warned} with quality warnings)"
         if skipped:
             msg += f"; {len(skipped)} skipped -- " + "; ".join(skipped)
         self.report({'WARNING'} if skipped else {'INFO'}, msg + ".")
