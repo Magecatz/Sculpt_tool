@@ -165,6 +165,14 @@ class ConformTubeTest(unittest.TestCase):
 
         self.assertLess(worst_gap(smoothed), worst_gap(raw))
 
+    def test_surface_standoffs_measures_distance_to_target(self):
+        # Garment tube 0.2 outside a taller target tube -> every garment
+        # vertex sits ~0.2 off the nearest target surface point.
+        target = common.make_tube("Target", radius=1.0, height=4.0)
+        garment = common.make_tube("Garment", radius=1.2, height=2.0)
+        dists = conform.surface_standoffs(common.world_positions(garment), self._ctx(target))
+        self.assertAlmostEqual(_mean(dists), 0.2, delta=0.02)
+
     def test_length_mismatch_raises(self):
         target = common.make_tube("Target", radius=2.0, height=4.0)
         garment = common.make_tube("Garment", radius=1.2, height=2.0)
