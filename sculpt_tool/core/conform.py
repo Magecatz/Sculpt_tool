@@ -150,6 +150,23 @@ def placed_standoff(placed_positions, target_ctx):
     return standoff
 
 
+def surface_standoffs(positions, target_ctx):
+    """Unsigned nearest-target-surface distance per vertex.
+
+    The abs-distance sibling of :func:`placed_standoff` with no min-clearance
+    clamp: just how far each vertex sits from the target surface, used by the
+    quality metrics (looseness preservation) rather than by conform itself.
+    Returns one float per ``positions`` entry, in order; a vertex with no
+    surface hit gets ``0.0``.
+    """
+    bvh = target_ctx.bvh
+    out = []
+    for position in positions:
+        _location, _normal, index, distance = bvh.find_nearest(Vector(position))
+        out.append(distance if index is not None else 0.0)
+    return out
+
+
 def project_to_target(placed_positions, standoff, target_ctx, keep_loose=True,
                       neighbors=None, weight_smooth_iterations=_WEIGHT_SMOOTH_ITERATIONS):
     """Conform armature-PLACED garment vertices to the target body (Direction B).

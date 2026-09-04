@@ -120,5 +120,25 @@ class EdgeDistortionTest(unittest.TestCase):
         self.assertAlmostEqual(result.median_ratio, 1.0, places=6)
 
 
+class QualityWarningTest(unittest.TestCase):
+    def _ed(self, distorted_fraction):
+        return quality.EdgeDistortion(
+            median_ratio=1.0, distorted_fraction=distorted_fraction, max_normalized=1.0
+        )
+
+    def test_high_distortion_warns(self):
+        self.assertIsNotNone(quality.quality_warning(self._ed(0.2), None))
+
+    def test_collapsed_looseness_warns(self):
+        self.assertIsNotNone(quality.quality_warning(self._ed(0.0), 0.2))
+
+    def test_clean_fit_is_none(self):
+        self.assertIsNone(quality.quality_warning(self._ed(0.0), 0.9))
+
+    def test_absent_loose_region_never_warns_on_looseness(self):
+        # looseness None = tight garment, must not produce a looseness warning.
+        self.assertIsNone(quality.quality_warning(self._ed(0.0), None))
+
+
 if __name__ == "__main__":
     unittest.main()

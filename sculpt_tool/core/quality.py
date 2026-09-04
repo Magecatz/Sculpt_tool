@@ -39,6 +39,9 @@ testable-without-Blender convention (ARCHITECTURE.md section 5).
 
 from dataclasses import dataclass
 
+MAX_DISTORTED_FRACTION = 0.05  # warn above; provisional, calibrate in Layer 2
+MIN_LOOSENESS_RATIO = 0.4      # warn below (when a loose region exists)
+
 
 @dataclass
 class EdgeDistortion:
@@ -153,3 +156,26 @@ def edge_distortion(reference_positions, fitted_positions, edges, tolerance=2.0,
         distorted_fraction=distorted / len(ratios),
         max_normalized=worst,
     )
+
+
+def quality_warning(edge_distortion, looseness):
+    """Human-readable warning if a fit's metrics breach the provisional
+    gates, else ``None``.
+
+    ``edge_distortion`` is an :class:`EdgeDistortion`; ``looseness`` is the
+    median loose-standoff ratio or ``None`` (no loose region -- never warned).
+    Pure decision logic so both the single and batch operators share one
+    tested threshold source (no ``bpy``).
+    """
+    problems = []
+    if edge_distortion.distorted_fraction > MAX_DISTORTED_FRACTION:
+        problems.append(
+            f"{edge_distortion.distorted_fraction:.0%} of edges distorted "
+            f"(max {MAX_DISTORTED_FRACTION:.0%})"
+        )
+    if looseness is not None and looseness < MIN_LOOSENESS_RATIO:
+        problems.append(
+            f"loose regions kept {looseness:.0%} of standoff "
+            f"(min {MIN_LOOSENESS_RATIO:.0%})"
+        )
+    return "; ".join(problems) if problems else None
